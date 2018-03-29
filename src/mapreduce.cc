@@ -4,14 +4,14 @@
 #include "mapreduce_impl.h"
 
 
-MapReduce::MapReduce() 
+MapReduce::MapReduce()
 	: impl_(new MapReduceImpl())
-	{}	
+	{}
 
 
 MapReduce::~MapReduce() {
 	delete impl_;
-}	
+}
 
 
 bool MapReduce::run(const std::string& config_filename) {

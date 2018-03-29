@@ -35,19 +35,19 @@ class UserReducer : public BaseReducer {
 };
 
 
-static std::function<std::shared_ptr<BaseMapper>() > my_mapper = 
+static std::function<std::shared_ptr<BaseMapper>() > my_mapper =
 		[] () { return std::shared_ptr<BaseMapper>(new UserMapper); };
 
-static std::function<std::shared_ptr<BaseReducer>() > my_reducer = 
+static std::function<std::shared_ptr<BaseReducer>() > my_reducer =
 		[] () { return std::shared_ptr<BaseReducer>(new UserReducer); };
 
 
 namespace {
 	bool register_tasks_and_check() {
-		
+
 		const std::string user_id = "cs6210";
 		if (!register_tasks(user_id, my_mapper, my_reducer)) {
-			std::cout << "Failed to register user_id: " << user_id << std::endl;	
+			std::cout << "Failed to register user_id: " << user_id << std::endl;
 			exit (EXIT_FAILURE);
 		}
 		return true;

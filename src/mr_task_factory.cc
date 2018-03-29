@@ -12,7 +12,7 @@ BaseMapper::BaseMapper() : impl_(new BaseMapperInternal) {}
 BaseMapper::~BaseMapper() {}
 
 void BaseMapper::emit(const std::string& key, const std::string& val) {
-	impl_->emit(key, val);	
+	impl_->emit(key, val);
 }
 
 
@@ -21,7 +21,7 @@ BaseReducer::BaseReducer() : impl_(new BaseReducerInternal) {}
 BaseReducer::~BaseReducer() {}
 
 void BaseReducer::emit(const std::string& key, const std::string& val) {
-	impl_->emit(key, val);	
+	impl_->emit(key, val);
 }
 
 
@@ -74,7 +74,7 @@ namespace {
 bool register_tasks(std::string user_id,  std::function<std::shared_ptr<BaseMapper>() >& generate_mapper,
 		std::function<std::shared_ptr<BaseReducer>() >& generate_reducer) {
 	TaskFactory& factory = TaskFactory::instance();
-	return factory.mappers_.insert(std::make_pair(user_id, generate_mapper)).second 
+	return factory.mappers_.insert(std::make_pair(user_id, generate_mapper)).second
 		&& factory.reducers_.insert(std::make_pair(user_id, generate_reducer)).second;
 }
 

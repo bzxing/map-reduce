@@ -1,12 +1,12 @@
 CXX = g++
 CPPFLAGS += -I/usr/local/include -pthread
-CXXFLAGS += -std=c++11 -g
+CXXFLAGS += -std=c++14 -g -DBOOST_ENABLE_ASSERT_HANDLER
 LDFLAGS += -L/usr/local/lib `pkg-config --libs grpc++ grpc`       \
            -Wl,--no-as-needed -lgrpc++_reflection -Wl,--as-needed \
-           -lprotobuf -lpthread -ldl
+           -lprotobuf -lpthread -ldl -lboost_system
 
-MAPREDUCE_LIB = -L../external/lib -lmapreduce 
-MR_WORKER_LIB = -L../external/lib -lmr_worker
+MAPREDUCE_LIB = -L../external/lib -lmapreduce -lboost_system
+MR_WORKER_LIB = -L../external/lib -lmr_worker -lboost_system
 
 all: mrdemo mr_worker
 
