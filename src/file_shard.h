@@ -21,7 +21,7 @@ struct FileShard
 {
 	std::string filename;
 	unsigned offset = 0;
-	unsigned length = 0;
+	unsigned shard_length = 0;
 	unsigned file_length = 0;
 };
 
@@ -41,13 +41,19 @@ namespace
 	void print_file_shards(std::ostream & os, const std::vector<FileShard> & shards)
 	{
 		std::ostringstream oss;
+		oss << "shard_id"
+			<< "\t" << "filename"
+			<< "\t" << "offset"
+			<< "\t" << "shard_length"
+			<< "\t" << "file_length"
+			<< "\n";
 		for (size_t i = 0; i < shards.size(); ++i)
 		{
 			const auto & shard = shards[i];
 			oss << i
 				<< "\t" << shard.filename
 				<< "\t" << shard.offset
-				<< "\t" << shard.length
+				<< "\t" << shard.shard_length
 				<< "\t" << shard.file_length
 				<< "\n";
 		}
