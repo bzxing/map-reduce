@@ -50,18 +50,28 @@ class MapReduceSpec
     };
 
     using FieldParseFunc = std::function< ParseLineResult(MapReduceSpec &, const std::string &) >;
+    using ValidateFunc = std::function< bool(const MapReduceSpec &) >;
 
     struct FieldParseData
     {
         unsigned parse_count = 0;
         FieldParseFunc parse_func;
+        ValidateFunc validate_func;
     };
 
 
 
 public:
-    bool validate() const
+    bool is_valid() const
     {
+        for (const auto & field_data : m_field_lookup)
+        {
+            auto validate_func = field_data.second.validate_func;
+            if (!validate_func(*this))
+            {
+                return false;
+            }
+        }
         return true;
     }
 
@@ -84,14 +94,14 @@ public:
                 {
                     const std::string & field = what[1];
                     const std::string & arg = what[2];
-                    std::cout << "Parsing config: \"" + field + "\" \"" + arg + "\"\n" << std::flush;
+                    //std::cout << "Parsing config: \"" + field + "\" \"" + arg + "\"\n" << std::flush;
 
                     // Parse the line
                     ParseLineResult parse_result = parse_line(field, arg);
                     if (!parse_result.success)
                     {
                         std::string err_msg(
-                              "Config file error at line " + std::to_string(iline)
+                              "Config Parse Error: at line " + std::to_string(iline)
                             + " of file \"" + config_filename + "\": "
                             + parse_result.error_description
                         );
@@ -218,7 +228,7 @@ private:
     }
     ParseLineResult parse_map_kilobytes(const std::string & arg)
     {
-        return generic_parse_unsigned(arg, m_max_kilobytes);
+        return generic_parse_unsigned(arg, m_map_kilobytes);
     }
     ParseLineResult parse_worker_ipaddr_ports(const std::string & arg)
     {
@@ -226,34 +236,120 @@ private:
     }
     ParseLineResult parse_input_files(const std::string & arg)
     {
-        return generic_parse_string_list(arg, m_input_filenames);
+        return generic_parse_string_list(arg, m_input_files);
     }
     ParseLineResult parse_output_dir(const std::string & arg)
     {
-        return generic_parse_string(arg, m_output_directories);
+        return generic_parse_string(arg, m_output_dir);
     }
     ParseLineResult parse_user_id(const std::string & arg)
     {
         return generic_parse_string(arg, m_user_id);
     }
 
+    bool validate_n_workers() const
+    {
+        bool success = m_num_workers > 0;
+        if (!success)
+        {
+            std::cout << "Config Validation Error: n_workers must be greater than 0\n" << std::flush;
+        }
+        return success;
+    }
+
+    bool validate_n_output_files() const
+    {
+        bool success = m_output_files > 0;
+        if (!success)
+        {
+            std::cout << "Config Validation Error: n_output_files must be greater than 0\n" << std::flush;
+        }
+        return success;
+    }
+
+    bool validate_map_kilobytes() const
+    {
+        bool success = m_output_files > 0;
+        if (!success)
+        {
+            std::cout << "Config Validation Error: map_kilobytes must be greater than 0\n" << std::flush;
+        }
+        return success;
+    }
+
+    bool validate_user_id() const
+    {
+        bool success = !m_user_id.empty();
+        if (!success)
+        {
+            std::cout << "Config Validation Error: user_id must not be empty\n" << std::flush;
+        }
+        return success;
+    }
+
+    bool validate_output_directories() const
+    {
+        bool success = !m_output_dir.empty();
+        if (!success)
+        {
+            std::cout << "Config Validation Error: output_directories must not be empty\n" << std::flush;
+        }
+        return success;
+    }
+
+    bool validate_worker_addresses() const
+    {
+        if (m_worker_addresses.empty())
+        {
+            std::cout << "Config Validation Error: m_worker_addresses must not be empty\n" << std::flush;
+            return false;
+        }
+        for (const std::string & str : m_worker_addresses)
+        {
+            if (str.empty())
+            {
+                std::cout << "Config Validation Error: m_worker_addresses must not have empty fields\n" << std::flush;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool validate_input_files() const
+    {
+        if (m_input_files.empty())
+        {
+            std::cout << "Config Validation Error: input_files must not be empty\n" << std::flush;
+            return false;
+        }
+        for (const std::string & str : m_input_files)
+        {
+            if (str.empty())
+            {
+                std::cout << "Config Validation Error: input_files must not have empty fields\n" << std::flush;
+                return false;
+            }
+        }
+        return true;
+    }
+
 
     unsigned m_num_workers = 0;
     unsigned m_output_files = 0;
-    unsigned m_max_kilobytes = 0;
+    unsigned m_map_kilobytes = 0;
     std::string m_user_id;
-    std::string m_output_directories;
+    std::string m_output_dir;
     std::vector<std::string> m_worker_addresses;
-    std::vector<std::string> m_input_filenames;
+    std::vector<std::string> m_input_files;
 
-    std::unordered_map<std::string, FieldParseData> m_field_lookup {
-        { "n_workers",           {0, &MapReduceSpec::parse_n_workers} },
-        { "worker_ipaddr_ports", {0, &MapReduceSpec::parse_worker_ipaddr_ports} },
-        { "input_files",         {0, &MapReduceSpec::parse_input_files} },
-        { "output_dir",          {0, &MapReduceSpec::parse_output_dir} },
-        { "n_output_files",      {0, &MapReduceSpec::parse_n_output_files} },
-        { "map_kilobytes",       {0, &MapReduceSpec::parse_map_kilobytes} },
-        { "user_id",             {0, &MapReduceSpec::parse_user_id} }
+    std::map<std::string, FieldParseData> m_field_lookup {
+         { "n_workers",           {0, &MapReduceSpec::parse_n_workers,           &MapReduceSpec::validate_n_workers } }
+        ,{ "worker_ipaddr_ports", {0, &MapReduceSpec::parse_worker_ipaddr_ports, &MapReduceSpec::validate_worker_addresses } }
+        ,{ "input_files",         {0, &MapReduceSpec::parse_input_files,         &MapReduceSpec::validate_input_files } }
+        ,{ "output_dir",          {0, &MapReduceSpec::parse_output_dir,          &MapReduceSpec::validate_output_directories } }
+        ,{ "n_output_files",      {0, &MapReduceSpec::parse_n_output_files,      &MapReduceSpec::validate_n_output_files } }
+        ,{ "map_kilobytes",       {0, &MapReduceSpec::parse_map_kilobytes,       &MapReduceSpec::validate_map_kilobytes } }
+        ,{ "user_id",             {0, &MapReduceSpec::parse_user_id,             &MapReduceSpec::validate_user_id } }
     };
 };
 
@@ -274,5 +370,5 @@ inline bool read_mr_spec_from_config_file(const std::string & config_filename, M
 
 /* CS6210_TASK: validate the specification read from the config file */
 inline bool validate_mr_spec(const MapReduceSpec & mr_spec) {
-    return true;
+    return mr_spec.is_valid();
 }
