@@ -102,8 +102,8 @@ namespace
 		// If not, advance to the next newline or EOF character.
 		unsigned next_offset = (prelim_offset + target_shard_length);
 
-		// If shard starts from 0, use the prelim.
-		// (This should not happen)
+		// If next shard starts from 0, use the prelim.
+		// (This should not happen, but we should be tolerant.)
 		if (next_offset == 0)
 		{
 			return prelim_shard_length;
@@ -138,7 +138,7 @@ namespace
 		BOOST_ASSERT(ifs.good());
 
 		unsigned adjusted_offset = boost::numeric_cast<unsigned>(static_cast<long>(ifs.tellg()));
-		BOOST_ASSERT(adjusted_offset >= prelim_shard_length);
+		BOOST_ASSERT(adjusted_offset > prelim_shard_length);
 		BOOST_ASSERT(adjusted_offset <= file_length);
 
 		return adjusted_offset - prelim_offset;
