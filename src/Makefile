@@ -1,6 +1,14 @@
 CXX = g++
 CPPFLAGS += -I/usr/local/include -pthread
-CXXFLAGS += -std=c++14 -g -DBOOST_ENABLE_ASSERT_HANDLER
+
+CXXFLAGS += \
+-std=c++14 -g \
+-DBOOST_ENABLE_ASSERT_HANDLER \
+-Wall -Wextra -Werror -Wconversion \
+-Wno-unused-parameter -Wno-unused-result -Wno-unused-variable \
+-Wno-unused-but-set-variable  -Wno-unused-function
+
+
 LDFLAGS += -L/usr/local/lib `pkg-config --libs grpc++ grpc`       \
            -Wl,--no-as-needed -lgrpc++_reflection -Wl,--as-needed \
            -lprotobuf -lpthread -ldl -lboost_system

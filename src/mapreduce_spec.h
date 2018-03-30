@@ -16,6 +16,8 @@
 #include <boost/algorithm/string/trim.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/assert.hpp>
+#include <boost/range/iterator_range.hpp>
+#include <boost/filesystem.hpp>
 
 namespace boost
 {
@@ -62,18 +64,6 @@ class MapReduceSpec
 
 
 public:
-    bool is_valid() const
-    {
-        for (const auto & field_data : m_field_lookup)
-        {
-            auto validate_func = field_data.second.validate_func;
-            if (!validate_func(*this))
-            {
-                return false;
-            }
-        }
-        return true;
-    }
 
     MapReduceSpec() {}
 
@@ -129,7 +119,30 @@ public:
             }
         }
 
-        std::cout << "Parsing succeeded!\n" << std::flush;
+        std::cout << "Config Parsing Succeeded!\n" << std::flush;
+    }
+
+    bool is_valid() const
+    {
+        for (const auto & field_data : m_field_lookup)
+        {
+            auto validate_func = field_data.second.validate_func;
+            if (!validate_func(*this))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    auto get_input_file_range() const
+    {
+        return boost::make_iterator_range(m_input_files.begin(), m_input_files.end());
+    }
+
+    unsigned get_map_kilobytes() const
+    {
+        return m_map_kilobytes;
     }
 
 private:
@@ -322,14 +335,26 @@ private:
             std::cout << "Config Validation Error: input_files must not be empty\n" << std::flush;
             return false;
         }
-        for (const std::string & str : m_input_files)
+
+        // Check file exists
+        for (const std::string & input_filename : m_input_files)
         {
-            if (str.empty())
+            if (input_filename.empty())
             {
                 std::cout << "Config Validation Error: input_files must not have empty fields\n" << std::flush;
                 return false;
             }
+
+            bool file_found = boost::filesystem::is_regular_file(input_filename);
+            if (!file_found)
+            {
+                std::string err_msg = "Config Validation Error: input_files contain filename \"" + input_filename
+                    + "\" which does not exist or is not a regular file.\n";
+                std::cout << err_msg << std::flush;
+                return false;
+            }
         }
+
         return true;
     }
 

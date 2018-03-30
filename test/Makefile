@@ -3,7 +3,7 @@ CPPFLAGS += -I/usr/local/include -pthread
 CXXFLAGS += -std=c++14 -g -DBOOST_ENABLE_ASSERT_HANDLER
 LDFLAGS += -L/usr/local/lib `pkg-config --libs grpc++ grpc`       \
            -Wl,--no-as-needed -lgrpc++_reflection -Wl,--as-needed \
-           -lprotobuf -lpthread -ldl -lboost_system
+           -lprotobuf -lpthread -ldl -lboost_system -lboost_filesystem
 
 MAPREDUCE_LIB = -L../external/lib -lmapreduce -lboost_system
 MR_WORKER_LIB = -L../external/lib -lmr_worker -lboost_system
