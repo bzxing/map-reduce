@@ -44,7 +44,8 @@ namespace
 		for (size_t i = 0; i < shards.size(); ++i)
 		{
 			const auto & shard = shards[i];
-			oss << shard.filename
+			oss << i
+				<< "\t" << shard.filename
 				<< "\t" << shard.offset
 				<< "\t" << shard.length
 				<< "\t" << shard.file_length
@@ -73,7 +74,8 @@ namespace
 
 				auto func_determine_shard_length = [](
 					  unsigned target_shard_length
-					, unsigned remaining_file_length)
+					, unsigned remaining_file_length
+					)
 				{
 					// If remaining is less than 1.5x of target shard length, use the remaining length
 					if (  remaining_file_length < ( target_shard_length + (target_shard_length / 2) )  )
