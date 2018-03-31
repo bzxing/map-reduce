@@ -167,12 +167,11 @@ public:
 
 	// Delegate to the constructor of one variant under BaseTask (a.k.a MapTask or Reduce Task).
 	// The parameter "args" must match the construction parameter signature of these
-	// derived class, minus the first field (uid of the request, which is generated in
-	// the body of this constructor centrally.)
+	// derived class, minus the first couple fields
 	template <class... Args>
 	static std::unique_ptr<Task> generate(
 		  TaskType task_type
-		, Args &&... args
+		, Args &&... args // Look at the constructor signatures of the derived classes of Task
 		)
 	{
 		std::unique_ptr<Task> m_task;
