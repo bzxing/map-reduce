@@ -19,19 +19,15 @@ message TaskRequest
 
 message TaskRequestAck
 {
-	enum RequestStatus
-	{
-		kAccepted = 0;
-		kRejected = 1;
-	}
-
 	int32 task_uid = 1;
-	RequestStatus status = 2;
+	bool accepted = 2;;
 }
 
 message TaskCompletion
 {
 	int32 task_uid = 1;
+	bool success = 2;
+	string fail_reason = 3;
 }
 
 message TaskCompletionAck

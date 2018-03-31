@@ -149,6 +149,12 @@ public:
         return boost::numeric_cast<unsigned>(m_workers.size());
     }
 
+    const std::string & get_worker(unsigned i) const
+    {
+        BOOST_ASSERT(i < m_workers.size());
+        return m_workers[i];
+    }
+
     unsigned get_map_kilobytes() const
     {
         return m_map_kilobytes;
