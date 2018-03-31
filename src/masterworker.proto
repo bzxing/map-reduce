@@ -11,21 +11,30 @@ message TaskRequest
 		kReduce = 1;
 	}
 
-	int32 task_uid = 1;
+	uint32 task_uid = 1;
 	TaskType task_type = 2;
+
+	// For map task, the list must only have one element
+	// For reduce task, it can be a real list
 	repeated string input_files = 3;
+
 	string output_file = 4;
+
+	// Offset and length for input file, only to be used by
+	// map task.
+	uint32 offset = 5;
+	uint32 length = 6;
 }
 
 message TaskRequestAck
 {
-	int32 task_uid = 1;
+	uint32 task_uid = 1;
 	bool accepted = 2;;
 }
 
 message TaskCompletion
 {
-	int32 task_uid = 1;
+	uint32 task_uid = 1;
 	bool success = 2;
 	string fail_reason = 3;
 }

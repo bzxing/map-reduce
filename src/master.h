@@ -3,6 +3,7 @@
 #include <memory>
 #include <functional>
 #include <mutex>
+#include <limits>
 
 
 #include <boost/numeric/conversion/cast.hpp>
@@ -30,13 +31,37 @@ using FileList = std::vector<std::string>;
 
 class Task
 {
+	struct PrivateCtorKey{};
+
 public:
 	using RawRequest = masterworker::TaskRequest;
 
-	template <class... Args>
-	static std::unique_ptr<Task> create_new_task( Args&&... args)
+	static std::unique_ptr<Task> create_map_task(
+		  const FileShard & shard
+	    , std::string && outfile
+	    )
 	{
-		return std::make_unique<Task>(std::forward<Args>(args)...);
+		return std::make_unique<Task>(
+			  PrivateCtorKey()
+			, masterworker::TaskRequest::kMap
+			, FileList{ {shard.filename} }
+			, std::move(outfile)
+			, shard.offset
+			, shard.shard_length
+			);
+	}
+
+	static std::unique_ptr<Task> create_reduce_task(
+		  FileList && infiles
+		, std::string && outfile
+		)
+	{
+		return std::make_unique<Task>(
+			  PrivateCtorKey()
+			, masterworker::TaskRequest::kReduce
+			, std::move(infiles)
+			, std::move(outfile)
+			);
 	}
 
 	const RawRequest & get_raw_request() const
@@ -44,12 +69,14 @@ public:
 		return m_message;
 	}
 
-private:
-
+	// This is intended to be private, enforeced by PrivateCtorKey
 	Task(
-		 TaskType task_type
-		,FileList && inputs
-		,std::string && output
+		  PrivateCtorKey
+		, TaskType task_type
+		, FileList && inputs
+		, std::string && output
+		, unsigned offset = 0
+		, unsigned length = 0
 		)
 	{
 		m_message.set_task_uid( s_task_uid.fetch_and_increment() );
@@ -62,7 +89,12 @@ private:
 		}
 
 		m_message.set_output_file(std::move(output));
+
+		m_message.set_offset(offset);
+		m_message.set_length(length);
 	}
+
+private:
 
 	Task(const Task &) = delete;
 	Task & operator=(const Task &) = delete;
