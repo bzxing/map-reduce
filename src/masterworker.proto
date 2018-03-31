@@ -26,32 +26,15 @@ message TaskRequest
 	string output_file = 4;
 }
 
-message TaskRequestAck
-{
-	uint32 task_uid = 1;
-	bool accepted = 2;;
-}
-
-message TaskCompletion
+message TaskAck
 {
 	uint32 task_uid = 1;
 	bool success = 2;
 	string fail_reason = 3;
 }
 
-message TaskCompletionAck
-{
-	int32 task_uid = 1;
-}
-
 
 service WorkerService
 {
-	rpc DispatchTaskToWorker (TaskRequest) returns (TaskRequestAck) {}
-
-}
-
-service MasterService
-{
-	rpc SignalCompletionToMaster (TaskCompletion) returns (TaskCompletionAck) {}
+	rpc DispatchTaskToWorker (TaskRequest) returns (TaskAck) {}
 }

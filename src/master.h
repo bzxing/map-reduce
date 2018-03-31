@@ -42,6 +42,8 @@ class Task
 public:
 	virtual ~Task() {}
 
+	virtual unsigned get_id() const = 0;
+
 	virtual TaskType get_task_type() const = 0;
 
 	virtual masterworker::TaskRequest generate_request_message() const = 0;
@@ -68,6 +70,11 @@ public:
 	// Non-copyable because UID
 	MapTask(const MapTask &) = delete;
 	MapTask & operator=(const MapTask &) = delete;
+
+	virtual unsigned get_id() const override
+	{
+		return m_uid;
+	}
 
 	virtual TaskType get_task_type() const override
 	{
@@ -125,6 +132,11 @@ public:
 	// Non-copyable because UID
 	ReduceTask(const ReduceTask &) = delete;
 	ReduceTask & operator=(const ReduceTask &) = delete;
+
+	virtual unsigned get_id() const override
+	{
+		return m_uid;
+	}
 
 	virtual TaskType get_task_type() const override
 	{
@@ -224,7 +236,9 @@ class WorkerManager
 		void connect()
 		{
 			m_outgoing_channel = grpc::CreateChannel(m_address, grpc::InsecureChannelCredentials());
+			BOOST_ASSERT(m_outgoing_channel);
 			m_outgoing_stub = masterworker::WorkerService::NewStub(m_outgoing_channel);
+			BOOST_ASSERT(m_outgoing_stub);
 		}
 
 		bool try_assign_task(const Task * const new_task)
@@ -262,7 +276,7 @@ class WorkerManager
 
 	private:
 
-		using Reply = masterworker::TaskRequestAck;
+		using Reply = masterworker::TaskAck;
 		using Responder = grpc::ClientAsyncResponseReader<Reply>;
 		using NextStatus = grpc::CompletionQueue::NextStatus;
 
@@ -271,7 +285,8 @@ class WorkerManager
         public:
 
         	// Constructor will issue a call
-        	Call( const Task & task , masterworker::WorkerService::Stub & stub )
+        	Call( const Task & task , masterworker::WorkerService::Stub & stub ) :
+        		m_task(task)
         	{
         		m_timestamp = gpr_now(GPR_CLOCK_MONOTONIC);
         		m_responder = stub.PrepareAsyncDispatchTaskToWorker
@@ -300,8 +315,9 @@ class WorkerManager
 					BOOST_ASSERT(this == receive_tag);
 
 					// Check whether the m_reply indicates the task is accepted (logic level check)
-					if ( m_status.ok() && m_reply.accepted() )
+					if ( m_status.ok() && m_reply.success() )
 					{
+						BOOST_ASSERT(m_task.get_id() == m_reply.task_uid());
 						success = true;
 					}
 				}
@@ -315,6 +331,7 @@ class WorkerManager
 			}
 
         private:
+        	const Task & m_task;
         	gpr_timespec m_timestamp;
 
 	        grpc::ClientContext m_context;
