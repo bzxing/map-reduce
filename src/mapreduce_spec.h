@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <algorithm>
 #include <functional>
@@ -60,8 +61,6 @@ class MapReduceSpec
         FieldParseFunc parse_func;
         ValidateFunc validate_func;
     };
-
-
 
 public:
 
@@ -138,6 +137,16 @@ public:
     auto get_input_file_range() const
     {
         return boost::make_iterator_range(m_input_files.begin(), m_input_files.end());
+    }
+
+    auto get_worker_range() const
+    {
+        return boost::make_iterator_range(m_workers.begin(), m_workers.end());
+    }
+
+    unsigned get_num_workers() const
+    {
+        return boost::numeric_cast<unsigned>(m_workers.size());
     }
 
     unsigned get_map_kilobytes() const
@@ -233,7 +242,8 @@ private:
 
     ParseLineResult parse_n_workers(const std::string & arg)
     {
-        return generic_parse_unsigned(arg, m_num_workers);
+        std::cout << "Config Parse Warning: Field n_workers is ignored\n" << std::flush;
+        return ParseLineResult();
     }
     ParseLineResult parse_n_output_files(const std::string & arg)
     {
@@ -245,7 +255,7 @@ private:
     }
     ParseLineResult parse_worker_ipaddr_ports(const std::string & arg)
     {
-        return generic_parse_string_list(arg, m_worker_addresses);
+        return generic_parse_string_list(arg, m_workers);
     }
     ParseLineResult parse_input_files(const std::string & arg)
     {
@@ -262,12 +272,8 @@ private:
 
     bool validate_n_workers() const
     {
-        bool success = m_num_workers > 0;
-        if (!success)
-        {
-            std::cout << "Config Validation Error: n_workers must be greater than 0\n" << std::flush;
-        }
-        return success;
+        // This field is ignored. No validation needed.
+        return true;
     }
 
     bool validate_n_output_files() const
@@ -312,16 +318,26 @@ private:
 
     bool validate_worker_addresses() const
     {
-        if (m_worker_addresses.empty())
+        if (m_workers.empty())
         {
-            std::cout << "Config Validation Error: m_worker_addresses must not be empty\n" << std::flush;
+            std::cout << "Config Validation Error: m_workers must not be empty\n" << std::flush;
             return false;
         }
-        for (const std::string & str : m_worker_addresses)
+        for (const std::string & str : m_workers)
         {
             if (str.empty())
             {
-                std::cout << "Config Validation Error: m_worker_addresses must not have empty fields\n" << std::flush;
+                std::cout << "Config Validation Error: m_workers must not have empty fields\n" << std::flush;
+                return false;
+            }
+        }
+        std::unordered_set<std::string> uniquifier;
+        for (const std::string & str : m_workers)
+        {
+            bool success = uniquifier.insert(str).second;
+            if (!success)
+            {
+                std::cout << "Config Validation Error: m_workers must not have duplicate fields\n" << std::flush;
                 return false;
             }
         }
@@ -358,13 +374,11 @@ private:
         return true;
     }
 
-
-    unsigned m_num_workers = 0;
     unsigned m_output_files = 0;
     unsigned m_map_kilobytes = 0;
     std::string m_user_id;
     std::string m_output_dir;
-    std::vector<std::string> m_worker_addresses;
+    std::vector<std::string> m_workers;
     std::vector<std::string> m_input_files;
 
     std::map<std::string, FieldParseData> m_field_lookup {
@@ -378,14 +392,8 @@ private:
     };
 };
 
-
-class SpecReader
-{
-
-};
-
 /* CS6210_TASK: Populate MapReduceSpec data structure with the specification from the config file */
-inline bool read_mr_spec_from_config_file(const std::string & config_filename, MapReduceSpec& mr_spec)
+inline bool read_mr_spec_from_config_file(const std::string & config_filename, MapReduceSpec & mr_spec)
 {
     mr_spec = MapReduceSpec(config_filename);
 
@@ -394,6 +402,7 @@ inline bool read_mr_spec_from_config_file(const std::string & config_filename, M
 
 
 /* CS6210_TASK: validate the specification read from the config file */
-inline bool validate_mr_spec(const MapReduceSpec & mr_spec) {
+inline bool validate_mr_spec(const MapReduceSpec & mr_spec)
+{
     return mr_spec.is_valid();
 }

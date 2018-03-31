@@ -1,3 +1,52 @@
 syntax = "proto3";
 
 package masterworker;
+
+// Request to execute task sent from master to worker
+message TaskRequest
+{
+	enum TaskType
+	{
+		kMap = 0;
+		kReduce = 1;
+	}
+
+	int32 task_uid = 1;
+	TaskType task_type = 2;
+	repeated string input_files = 3;
+	string output_file = 4;
+}
+
+message TaskRequestAck
+{
+	enum RequestStatus
+	{
+		kAccepted = 0;
+		kRejected = 1;
+	}
+
+	int32 task_uid = 1;
+	RequestStatus status = 2;
+}
+
+message TaskCompletion
+{
+	int32 task_uid = 1;
+}
+
+message TaskCompletionAck
+{
+	int32 task_uid = 1;
+}
+
+
+service WorkerService
+{
+	rpc DispatchTaskToWorker (TaskRequest) returns (TaskRequestAck) {}
+
+}
+
+service MasterService
+{
+	rpc SignalCompletionToMaster (TaskCompletion) returns (TaskCompletionAck) {}
+}
