@@ -24,7 +24,7 @@
 
 using ScopedLock = std::unique_lock<std::mutex>;
 
-constexpr int kTaskRequestAckTimeout = 2;
+constexpr int kTaskExecutionTimeout = 10;
 
 using TaskType = typename masterworker::TaskRequest::TaskType;
 constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
@@ -262,54 +262,76 @@ class WorkerManager
 
 	private:
 
-		bool contact_worker_to_execute_task( const Task & task )
-		{
-			using Reply = masterworker::TaskRequestAck;
-			using Responder = grpc::ClientAsyncResponseReader<Reply>;
-			using NextStatus = grpc::CompletionQueue::NextStatus;
+		using Reply = masterworker::TaskRequestAck;
+		using Responder = grpc::ClientAsyncResponseReader<Reply>;
+		using NextStatus = grpc::CompletionQueue::NextStatus;
 
-			// Setup and issue the call
+		class Call
+        {
+        public:
 
-			grpc::ClientContext context;
-			grpc::CompletionQueue cq;
-			Reply reply;
-			grpc::Status status;
+        	// Constructor will issue a call
+        	Call( const Task & task , masterworker::WorkerService::Stub & stub )
+        	{
+        		m_timestamp = gpr_now(GPR_CLOCK_MONOTONIC);
+        		m_responder = stub.PrepareAsyncDispatchTaskToWorker
+					(&m_context, task.generate_request_message(), &m_cq);
+				m_responder->StartCall();
+				m_responder->Finish(&m_reply, &m_status, this);
+        	}
 
-			std::unique_ptr<Responder> responder = m_outgoing_stub->PrepareAsyncDispatchTaskToWorker
-				(&context, task.generate_request_message(), &cq);
-			responder->StartCall();
-			void * const send_tag = nullptr;
-			responder->Finish(&reply, &status, send_tag);
-
-
-			// Wait for a bit of time for a reply, until a set timeout.
-
-			gpr_timespec deadline = gpr_now(GPR_CLOCK_MONOTONIC);
-			deadline.tv_sec += kTaskRequestAckTimeout;
-
-			void * receive_tag = nullptr;
-            bool ok = false;
-			NextStatus next_status = cq.AsyncNext(&receive_tag, &ok, deadline);
-
-
-			// Will block until deadline...
-			// Then we get the result (either success of fail)
-
-			bool success = false;
-
-			// Check whether the reply is successfully received (communication level check)
-			if ( next_status == NextStatus::GOT_EVENT && ok )
+        	bool try_get_result()
 			{
-				BOOST_ASSERT(send_tag == receive_tag);
+				gpr_timespec deadline = m_timestamp;
+				deadline.tv_sec += kTaskExecutionTimeout;
 
-				// Check whether the reply indicates the task is accepted (logic level check)
-				if ( status.ok() && reply.accepted() )
+				void * receive_tag = nullptr;
+	            bool ok = false;
+				NextStatus next_status = m_cq.AsyncNext(&receive_tag, &ok, deadline);
+
+				// Will block until deadline...
+				// Then we get the result (either success of fail)
+
+				bool success = false;
+
+				// Check whether the m_reply is successfully received (communication level check)
+				if ( next_status == NextStatus::GOT_EVENT && ok )
 				{
-					success = true;
+					BOOST_ASSERT(this == receive_tag);
+
+					// Check whether the m_reply indicates the task is accepted (logic level check)
+					if ( m_status.ok() && m_reply.accepted() )
+					{
+						success = true;
+					}
 				}
+
+				return success;
 			}
 
-			return success;
+			const Reply & get_reply() const
+			{
+				return m_reply;
+			}
+
+        private:
+        	gpr_timespec m_timestamp;
+
+	        grpc::ClientContext m_context;
+			grpc::CompletionQueue m_cq;
+			std::unique_ptr<Responder> m_responder;
+
+			Reply m_reply;
+			grpc::Status m_status;
+		};
+
+
+		bool contact_worker_to_execute_task( const Task & task )
+		{
+			// Setup and issue the call
+			m_call = std::make_unique<Call>(task, *m_outgoing_stub);
+
+			return m_call.get();
 		}
 
 		//// Data Fields /////
@@ -326,8 +348,7 @@ class WorkerManager
 		std::shared_ptr<grpc::Channel> m_outgoing_channel;
         std::unique_ptr<masterworker::WorkerService::Stub> m_outgoing_stub;
 
-        // Incoming connection session used to receive signal of completion from worker
-        // TODO:
+        std::unique_ptr<Call> m_call;
 	};
 	// End class WorkerInfo //
 
