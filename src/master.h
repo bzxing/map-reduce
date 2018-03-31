@@ -9,6 +9,7 @@
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
 #include <boost/range/iterator_range.hpp>
+#include <boost/variant.hpp>
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
@@ -26,85 +27,182 @@ using ScopedLock = std::unique_lock<std::mutex>;
 constexpr int kTaskRequestAckTimeout = 2;
 
 using TaskType = typename masterworker::TaskRequest::TaskType;
+constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
+constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
 
-using FileList = std::vector<std::string>;
+struct PrivateTaskGeneratorKey
+{
+private:
+	friend class TaskGenerator;
+	PrivateTaskGeneratorKey() {};
+};
 
 class Task
 {
-	struct PrivateCtorKey{};
-
 public:
-	using RawRequest = masterworker::TaskRequest;
+	virtual ~Task() {}
 
-	static std::unique_ptr<Task> create_map_task(
-		  const FileShard & shard
-	    , std::string && outfile
-	    )
-	{
-		return std::make_unique<Task>(
-			  PrivateCtorKey()
-			, masterworker::TaskRequest::kMap
-			, FileList{ {shard.filename} }
-			, std::move(outfile)
-			, shard.offset
-			, shard.shard_length
-			);
-	}
+	virtual TaskType get_task_type() const = 0;
 
-	static std::unique_ptr<Task> create_reduce_task(
-		  FileList && infiles
-		, std::string && outfile
+	virtual masterworker::TaskRequest generate_request_message() const = 0;
+};
+
+//// Begin class MapTask ////
+class MapTask : public Task
+{
+public:
+
+	// Can only be called by holder of PrivateTaskGeneratorKey
+	MapTask(
+		  PrivateTaskGeneratorKey
+		, unsigned uid
+		, const FileShard & input_shard
+		, std::string output_file
 		)
+	:
+		  m_uid( uid )
+		, m_input_shard( input_shard )
+		, m_output_file( std::move(output_file) )
+	{}
+
+	// Non-copyable because UID
+	MapTask(const MapTask &) = delete;
+	MapTask & operator=(const MapTask &) = delete;
+
+	virtual TaskType get_task_type() const override
 	{
-		return std::make_unique<Task>(
-			  PrivateCtorKey()
-			, masterworker::TaskRequest::kReduce
-			, std::move(infiles)
-			, std::move(outfile)
-			);
+		return kMapTaskType;
 	}
 
-	const RawRequest & get_raw_request() const
+	virtual masterworker::TaskRequest generate_request_message() const override
 	{
-		return m_message;
+		masterworker::TaskRequest msg;
+		msg.set_task_uid( m_uid );
+		msg.set_task_type( get_task_type() );
+		*msg.add_input_file() = generate_file_shard_message_field( m_input_shard );
+		msg.set_output_file( m_output_file );
+		return msg;
 	}
 
-	// This is intended to be private, enforeced by PrivateCtorKey
-	Task(
-		  PrivateCtorKey
-		, TaskType task_type
-		, FileList && inputs
-		, std::string && output
-		, unsigned offset = 0
-		, unsigned length = 0
+private:
+	static masterworker::FileShard
+	generate_file_shard_message_field(const FileShard & file_shard)
+	{
+		masterworker::FileShard msg;
+		msg.set_filename(file_shard.filename);
+		msg.set_offset(file_shard.offset);
+		msg.set_length(file_shard.shard_length);
+		return msg;
+	}
+
+	unsigned m_uid = 0;
+	const FileShard & m_input_shard;
+	std::string m_output_file;
+};
+//// End class MapTask ////
+
+
+//// Begin class ReduceTask ////
+class ReduceTask : public Task
+{
+public:
+
+	// Can only be called by holder of PrivateTaskGeneratorKey
+	ReduceTask(
+		  PrivateTaskGeneratorKey
+		, unsigned uid
+		, std::string input_file_1
+		, std::string input_file_2
+		, std::string output_file
 		)
+	:
+		  m_uid( uid )
+		, m_input_file_1( std::move(input_file_1) )
+		, m_input_file_2( std::move(input_file_2) )
+		, m_output_file( std::move(output_file) )
+	{}
+
+	// Non-copyable because UID
+	ReduceTask(const ReduceTask &) = delete;
+	ReduceTask & operator=(const ReduceTask &) = delete;
+
+	virtual TaskType get_task_type() const override
 	{
-		m_message.set_task_uid( s_task_uid.fetch_and_increment() );
+		return kReduceTaskType;
+	}
 
-		m_message.set_task_type(task_type);
-
-		for (auto && input : inputs)
-		{
-			m_message.add_input_files(std::move(input));
-		}
-
-		m_message.set_output_file(std::move(output));
-
-		m_message.set_offset(offset);
-		m_message.set_length(length);
+	virtual masterworker::TaskRequest generate_request_message() const override
+	{
+		masterworker::TaskRequest msg;
+		msg.set_task_uid( m_uid );
+		msg.set_task_type( get_task_type() );
+		*msg.add_input_file() = generate_file_shard_message_field( m_input_file_1 );
+		*msg.add_input_file() = generate_file_shard_message_field( m_input_file_2 );
+		msg.set_output_file( m_output_file );
+		return msg;
 	}
 
 private:
 
-	Task(const Task &) = delete;
-	Task & operator=(const Task &) = delete;
+	static masterworker::FileShard
+	generate_file_shard_message_field(std::string filename)
+	{
+		masterworker::FileShard msg;
+		msg.set_filename( std::move(filename) );
+		msg.set_offset( 0 );
+		msg.set_length( 0 );
+		return msg;
+	}
 
-	RawRequest m_message;
+	unsigned m_uid = 0;
+	std::string m_input_file_1;
+	std::string m_input_file_2;
+	std::string m_output_file;
+};
+//// End class ReduceTask ////
+
+class TaskGenerator
+{
+public:
+
+	// Delegate to the constructor of one variant under BaseTask (a.k.a MapTask or Reduce Task).
+	// The parameter "args" must match the construction parameter signature of these
+	// derived class, minus the first field (uid of the request, which is generated in
+	// the body of this constructor centrally.)
+	template <class... Args>
+	static std::unique_ptr<Task> generate(
+		  TaskType task_type
+		, Args &&... args
+		)
+	{
+		std::unique_ptr<Task> m_task;
+		const unsigned uid = s_task_uid.fetch_and_increment();
+
+		if (task_type = kMapTaskType)
+		{
+			m_task = std::make_unique<MapTask>
+				(PrivateTaskGeneratorKey(), uid, std::forward<Args>(args)...);
+		}
+		else if (task_type = kReduceTaskType)
+		{
+			m_task = std::make_unique<ReduceTask>
+				(PrivateTaskGeneratorKey(), uid, std::forward<Args>(args)...);
+		}
+		else
+		{
+			BOOST_ASSERT_MSG(false, "Unknown task type!");
+		}
+
+		BOOST_ASSERT(m_task);
+		return m_task;
+	}
+
+private:
 
 	static tbb::atomic<unsigned> s_task_uid;
 };
 
-tbb::atomic<unsigned> Task::s_task_uid = 0;
+tbb::atomic<unsigned> TaskGenerator::s_task_uid = 0;
 
 
 // Roles:
@@ -130,7 +228,7 @@ class WorkerManager
 			m_outgoing_stub = masterworker::WorkerService::NewStub(m_outgoing_channel);
 		}
 
-		bool try_assign_task(Task * const new_task)
+		bool try_assign_task(const Task * const new_task)
 		{
 			BOOST_ASSERT(m_outgoing_channel);
 			BOOST_ASSERT(m_outgoing_stub);
@@ -141,7 +239,7 @@ class WorkerManager
 			// Atomically mark as busy, so other threads will get bounced back
 			if (success)
 			{
-				Task * snapshot = m_task.compare_and_swap(new_task, nullptr);
+				const Task * snapshot = m_task.compare_and_swap(new_task, nullptr);
 			    success = (snapshot == nullptr);
 			}
 
@@ -154,7 +252,7 @@ class WorkerManager
 			// Before exiting, if not successful, revert m_task to null.
 			if (!success)
 			{
-				Task * snapshot = m_task.fetch_and_store(nullptr);
+				const Task * snapshot = m_task.fetch_and_store(nullptr);
 				BOOST_ASSERT_MSG(snapshot == new_task,
 					"Detected race condition! "
 					"Worker's assigned task should not change during task assignment.");
@@ -179,7 +277,7 @@ class WorkerManager
 			grpc::Status status;
 
 			std::unique_ptr<Responder> responder = m_outgoing_stub->PrepareAsyncDispatchTaskToWorker
-				(&context, task.get_raw_request(), &cq);
+				(&context, task.generate_request_message(), &cq);
 			responder->StartCall();
 			void * const send_tag = nullptr;
 			responder->Finish(&reply, &status, send_tag);
@@ -223,7 +321,7 @@ class WorkerManager
 		// Atomic pointer to current task being attempted/executed.
 		// Also used to atomically indicate whether worker is busy or not.
 		// It can only change in two ways: nullptr to task, or task to nullptr.
-		tbb::atomic<Task *> m_task = nullptr;
+		tbb::atomic<const Task *> m_task = nullptr;
 
 		// Outgoing connection session data used to assign task to worker and get acknowledgment
 		std::shared_ptr<grpc::Channel> m_outgoing_channel;
@@ -254,9 +352,6 @@ public:
 
 private:
 	std::vector<std::unique_ptr<WorkerInfo>> m_workers;
-
-
-
 };
 
 class TaskAllocator

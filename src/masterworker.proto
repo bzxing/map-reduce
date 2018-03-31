@@ -2,6 +2,13 @@ syntax = "proto3";
 
 package masterworker;
 
+message FileShard
+{
+	string filename = 1;
+	uint32 offset = 2;
+	uint32 length = 3;
+}
+
 // Request to execute task sent from master to worker
 message TaskRequest
 {
@@ -14,16 +21,9 @@ message TaskRequest
 	uint32 task_uid = 1;
 	TaskType task_type = 2;
 
-	// For map task, the list must only have one element
-	// For reduce task, it can be a real list
-	repeated string input_files = 3;
+	repeated FileShard input_file = 3; // length & offset are ignored for reduction
 
 	string output_file = 4;
-
-	// Offset and length for input file, only to be used by
-	// map task.
-	uint32 offset = 5;
-	uint32 length = 6;
 }
 
 message TaskRequestAck
