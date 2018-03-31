@@ -1,7 +1,22 @@
 #pragma once
 
+#include <memory>
+#include <functional>
+
+#include <boost/numeric/conversion/cast.hpp>
+#include <boost/assert.hpp>
+#include <boost/range/iterator_range.hpp>
+
+#include <grpc++/grpc++.h>
+#include <grpc/support/log.h>
+
+#include "masterworker.grpc.pb.h"
+#include "masterworker.pb.h"
+
 #include "mapreduce_spec.h"
 #include "file_shard.h"
+
+
 
 enum class TaskType
 {
@@ -12,8 +27,91 @@ enum class TaskType
 class Task
 {
 
+};
+
+template <class Reply>
+struct OutgoingCallData
+{
+	Reply reply;
+	grpc::ClientContext context;
+	grpc::Status status;
+	std::unique_ptr<grpc::ClientAsyncResponseReader<Reply>> response_reader;
+};
+
+template <class Reply, class Request, class Stub>
+inline std::unique_ptr<OutgoingCallData<Reply>> make_async_call(
+	  const Request & request
+	, grpc::CompletionQueue & cq
+	, Stub & stub
+	, std::function< std::unique_ptr<grpc::ClientAsyncResponseReader<Reply>>(Stub&) > f_make_response_reader
+	)
+{
+	auto call = std::make_unique<OutgoingCallData<Reply>>();
+
+	call->response_reader = f_make_response_reader(stub);
+	call->response_reader->StartCall();
+	call->response_reader->Finish(&call->reply, &call->status, call.get());
+
+	return call;
+}
+
+class WorkerList
+{
+public:
+	WorkerList(const MapReduceSpec & spec) :
+		m_spec(spec)
+	{
+
+	}
+
+	auto get_workers() const
+	{
+		return m_spec.get_worker_range();
+	}
+
+	unsigned get_num_workers() const
+	{
+		return boost::numeric_cast<unsigned>(get_workers().size());
+	}
+
+	const std::string & get_worker(unsigned i) const
+	{
+		BOOST_ASSERT(i < get_num_workers());
+		return get_workers()[i];
+	}
+
+private:
+	const MapReduceSpec & m_spec;
 
 };
+
+
+// Role:
+//  - Keeps channels and stubs for each worker
+//
+class OutgoingCallManager
+{
+public:
+	OutgoingCallManager(  )
+	{
+
+	}
+
+private:
+
+
+};
+
+
+
+class IncomingCallManager
+{
+public:
+
+private:
+
+};
+
 
 // Roles:
 //  - Keeps connection to each worker
