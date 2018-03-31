@@ -22,7 +22,7 @@
 
 using ScopedLock = std::unique_lock<std::mutex>;
 
-constexpr int kTaskRequestAckTimeout = 4;
+constexpr int kTaskRequestAckTimeout = 2;
 
 using TaskType = typename masterworker::TaskRequest::TaskType;
 
@@ -88,21 +88,20 @@ class WorkerManager
 	public:
 		WorkerInfo(const std::string & _address) :
 			  m_address(_address)
-
 		{
-
+			connect();
 		}
 
 		void connect()
 		{
-			m_channel = grpc::CreateChannel(m_address, grpc::InsecureChannelCredentials());
-			m_stub = masterworker::WorkerService::NewStub(m_channel);
+			m_outgoing_channel = grpc::CreateChannel(m_address, grpc::InsecureChannelCredentials());
+			m_outgoing_stub = masterworker::WorkerService::NewStub(m_outgoing_channel);
 		}
 
 		bool try_assign_task(Task * const new_task)
 		{
-			BOOST_ASSERT(m_channel);
-			BOOST_ASSERT(m_stub);
+			BOOST_ASSERT(m_outgoing_channel);
+			BOOST_ASSERT(m_outgoing_stub);
 			BOOST_ASSERT(new_task);
 
 			bool success = true;
@@ -147,7 +146,7 @@ class WorkerManager
 			Reply reply;
 			grpc::Status status;
 
-			std::unique_ptr<Responder> responder = m_stub->PrepareAsyncDispatchTaskToWorker
+			std::unique_ptr<Responder> responder = m_outgoing_stub->PrepareAsyncDispatchTaskToWorker
 				(&context, task.get_raw_request(), &cq);
 			responder->StartCall();
 			void * const send_tag = nullptr;
@@ -182,17 +181,24 @@ class WorkerManager
 			}
 
 			return success;
-
-
 		}
 
-		const std::string & m_address;
-		tbb::atomic<Task *> m_task = nullptr;
-			// Atomic pointer that can only go two ways:
-			//   nullptr to task, or task to nullptr.
+		//// Data Fields /////
 
-		std::shared_ptr<grpc::Channel> m_channel;
-        std::unique_ptr<masterworker::WorkerService::Stub> m_stub;
+		// Server address, defined at construction time
+		const std::string & m_address;
+
+		// Atomic pointer to current task being attempted/executed.
+		// Also used to atomically indicate whether worker is busy or not.
+		// It can only change in two ways: nullptr to task, or task to nullptr.
+		tbb::atomic<Task *> m_task = nullptr;
+
+		// Outgoing connection session data used to assign task to worker and get acknowledgment
+		std::shared_ptr<grpc::Channel> m_outgoing_channel;
+        std::unique_ptr<masterworker::WorkerService::Stub> m_outgoing_stub;
+
+        // Incoming connection session used to receive signal of completion from worker
+        // TODO:
 	};
 	// End class WorkerInfo //
 
