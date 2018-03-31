@@ -4,6 +4,7 @@
 #include <functional>
 #include <mutex>
 #include <limits>
+#include <thread>
 
 
 #include <boost/numeric/conversion/cast.hpp>
@@ -47,6 +48,8 @@ public:
 	virtual TaskType get_task_type() const = 0;
 
 	virtual masterworker::TaskRequest generate_request_message() const = 0;
+
+private:
 };
 
 //// Begin class MapTask ////
@@ -223,6 +226,79 @@ tbb::atomic<unsigned> TaskGenerator::s_task_uid = 0;
 //  - Clean up request sent to worker but not delivered
 class WorkerManager
 {
+	using Reply = masterworker::TaskAck;
+	using Responder = grpc::ClientAsyncResponseReader<Reply>;
+	using NextStatus = grpc::CompletionQueue::NextStatus;
+
+	class Call
+    {
+    public:
+
+    	// Constructor will issue a call
+    	Call( const Task * const task , masterworker::WorkerService::Stub & stub ) :
+    		m_task(task)
+    	{
+    		BOOST_ASSERT(task);
+    		m_timestamp = gpr_now(GPR_CLOCK_MONOTONIC);
+    		m_responder = stub.PrepareAsyncDispatchTaskToWorker
+				(&m_context, task->generate_request_message(), &m_cq);
+			m_responder->StartCall();
+			m_responder->Finish(&m_reply, &m_status, this);
+    	}
+
+
+    	bool try_get_result()
+		{
+			gpr_timespec deadline = m_timestamp;
+			deadline.tv_sec += kTaskExecutionTimeout;
+
+			void * receive_tag = nullptr;
+            bool ok = false;
+			NextStatus next_status = m_cq.AsyncNext(&receive_tag, &ok, deadline);
+
+			// Will block until deadline...
+			// Then we get the result (either success of fail)
+
+			bool success = false;
+
+			// Check whether the m_reply is successfully received (communication level check)
+			if ( next_status == NextStatus::GOT_EVENT && ok )
+			{
+				BOOST_ASSERT(this == receive_tag);
+
+				// Check whether the m_reply indicates the task is accepted (logic level check)
+				if ( m_status.ok() && m_reply.success() )
+				{
+					BOOST_ASSERT(m_task->get_id() == m_reply.task_uid());
+					success = true;
+				}
+			}
+
+			return success;
+		}
+
+		const Reply & get_reply() const
+		{
+			return m_reply;
+		}
+
+		const Task * get_task() const
+		{
+			return m_task;
+		}
+
+    private:
+    	const Task * m_task = nullptr;
+    	gpr_timespec m_timestamp;
+
+        grpc::ClientContext m_context;
+		grpc::CompletionQueue m_cq;
+		std::unique_ptr<Responder> m_responder;
+
+		Reply m_reply;
+		grpc::Status m_status;
+	};
+
 	// Begin class WorkerInfo //
 	class WorkerInfo
 	{
@@ -241,131 +317,83 @@ class WorkerManager
 			BOOST_ASSERT(m_outgoing_stub);
 		}
 
+		void start_listening_for_completion()
+		{
+			m_listen_for_completion_thread = std::thread(
+				[this](){ thread_listening_for_completion(); } );
+		}
+
+
 		bool try_assign_task(const Task * const new_task)
 		{
 			BOOST_ASSERT(m_outgoing_channel);
 			BOOST_ASSERT(m_outgoing_stub);
+
 			BOOST_ASSERT(new_task);
 
-			bool success = true;
+			ScopedLock lock(m_mutex);
 
-			// Atomically mark as busy, so other threads will get bounced back
-			if (success)
+			// Check if worker is currently executing. Reject if it is.
+			if (m_call_data)
 			{
-				const Task * snapshot = m_task.compare_and_swap(new_task, nullptr);
-			    success = (snapshot == nullptr);
+				return false;
 			}
 
-			// Try to create a new task, send to worker, and wait for acceptance
-			if (success)
-			{
-				success = contact_worker_to_execute_task(*new_task);
-			}
+			// Try farm out the task to worker. Constructor will make the call
+			m_call_data = std::make_unique<Call>(new_task, *m_outgoing_stub);
 
-			// Before exiting, if not successful, revert m_task to null.
-			if (!success)
-			{
-				const Task * snapshot = m_task.fetch_and_store(nullptr);
-				BOOST_ASSERT_MSG(snapshot == new_task,
-					"Detected race condition! "
-					"Worker's assigned task should not change during task assignment.");
-			}
+			m_cv.notify_one();
 
-			return success;
+			return true;
 		}
 
 	private:
 
-		using Reply = masterworker::TaskAck;
-		using Responder = grpc::ClientAsyncResponseReader<Reply>;
-		using NextStatus = grpc::CompletionQueue::NextStatus;
-
-		class Call
-        {
-        public:
-
-        	// Constructor will issue a call
-        	Call( const Task & task , masterworker::WorkerService::Stub & stub ) :
-        		m_task(task)
-        	{
-        		m_timestamp = gpr_now(GPR_CLOCK_MONOTONIC);
-        		m_responder = stub.PrepareAsyncDispatchTaskToWorker
-					(&m_context, task.generate_request_message(), &m_cq);
-				m_responder->StartCall();
-				m_responder->Finish(&m_reply, &m_status, this);
-        	}
-
-        	bool try_get_result()
+		void thread_listening_for_completion()
+		{
+			for (;;)
 			{
-				gpr_timespec deadline = m_timestamp;
-				deadline.tv_sec += kTaskExecutionTimeout;
+				ScopedLock lock(m_mutex);
 
-				void * receive_tag = nullptr;
-	            bool ok = false;
-				NextStatus next_status = m_cq.AsyncNext(&receive_tag, &ok, deadline);
-
-				// Will block until deadline...
-				// Then we get the result (either success of fail)
-
-				bool success = false;
-
-				// Check whether the m_reply is successfully received (communication level check)
-				if ( next_status == NextStatus::GOT_EVENT && ok )
+				// Block until m_call_data is present.
+				while (!m_call_data)
 				{
-					BOOST_ASSERT(this == receive_tag);
-
-					// Check whether the m_reply indicates the task is accepted (logic level check)
-					if ( m_status.ok() && m_reply.success() )
-					{
-						BOOST_ASSERT(m_task.get_id() == m_reply.task_uid());
-						success = true;
-					}
+					m_cv.wait(lock);
 				}
 
-				return success;
+				bool success = m_call_data->try_get_result();
+
+				if (success)
+				{
+					// TODO: Handle success
+				}
+				else
+				{
+					// TODO: Handle failure
+				}
+
+				// Can release m_call_data
+				m_call_data = nullptr;
 			}
-
-			const Reply & get_reply() const
-			{
-				return m_reply;
-			}
-
-        private:
-        	const Task & m_task;
-        	gpr_timespec m_timestamp;
-
-	        grpc::ClientContext m_context;
-			grpc::CompletionQueue m_cq;
-			std::unique_ptr<Responder> m_responder;
-
-			Reply m_reply;
-			grpc::Status m_status;
-		};
-
-
-		bool contact_worker_to_execute_task( const Task & task )
-		{
-			// Setup and issue the call
-			m_call = std::make_unique<Call>(task, *m_outgoing_stub);
-
-			return m_call.get();
 		}
 
 		//// Data Fields /////
+		std::mutex m_mutex; // Guard everything non-const below. These fields are accessed by multiple threads.
+		std::condition_variable m_cv;
 
 		// Server address, defined at construction time
 		const std::string & m_address;
 
-		// Atomic pointer to current task being attempted/executed.
+		// Pointer to current task being attempted/executed.
 		// Also used to atomically indicate whether worker is busy or not.
 		// It can only change in two ways: nullptr to task, or task to nullptr.
-		tbb::atomic<const Task *> m_task = nullptr;
+		std::unique_ptr<Call> m_call_data;
 
 		// Outgoing connection session data used to assign task to worker and get acknowledgment
 		std::shared_ptr<grpc::Channel> m_outgoing_channel;
         std::unique_ptr<masterworker::WorkerService::Stub> m_outgoing_stub;
 
-        std::unique_ptr<Call> m_call;
+        std::thread m_listen_for_completion_thread;
 	};
 	// End class WorkerInfo //
 
