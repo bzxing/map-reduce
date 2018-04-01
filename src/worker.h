@@ -68,23 +68,8 @@ public:
 private:
 };
 
-// class WorkerServiceImpl final : public WorkerService::Service
-// {
-//  grpc::Service RoutineName(
-//           grpc::ServerContext * context
-//         , const masterworker::TaskRequest & request
-//         , masterworker::TaskAck * reply
-//  ) override
-//  {
-
-//      return grpc::Status::OK;
-//  }
-// };
-
 class Server
 {
-
-
     //// Begin class CallData ////
     class CallData
     {
@@ -95,6 +80,7 @@ class Server
         ) :
             m_responder(&m_context)
         {
+            m_request.set_task_uid( std::numeric_limits<unsigned>::max() );
             request_call(service, cq);
         }
 
@@ -105,7 +91,7 @@ class Server
 
             // Assemble reply message
             m_reply = TaskAck();
-            m_reply.set_task_uid(m_request.task_uid());
+            m_reply.set_task_uid( m_request.task_uid() );
             m_reply.set_success(success);
 
             // Call Finish
@@ -115,6 +101,9 @@ class Server
         void set_reply_returned()
         {
             m_reply_returned = true;
+
+            // const unsigned task_uuid = get_task_uuid();
+            // std::cout << "Reply returned for task " + std::to_string(task_uuid) + "\n" << std::flush;
         }
 
         bool has_sent_reply() const
@@ -125,6 +114,11 @@ class Server
         bool should_destroy( const gpr_timespec & curr_time ) const
         {
             return m_reply_returned || send_reply_has_timed_out(curr_time);
+        }
+
+        unsigned get_task_uuid() const
+        {
+            return m_request.task_uid();
         }
 
     private:
@@ -230,6 +224,8 @@ public:
                 {
                     if (iter->should_destroy(curr_time))
                     {
+                        std::cout << "Destroying request for Task "
+                            + std::to_string(iter->get_task_uuid()) + "\n" << std::flush;
                         iter = call_list.erase(iter);
                     }
                     else
@@ -253,6 +249,7 @@ public:
 
                 if (call_data->has_sent_reply())
                 {
+                    std::cout << "Reply returned for task " + std::to_string(call_data->get_task_uuid()) + "\n" << std::flush;
                     // Case when a reply has been completed.
                     // We'll just mark it as completed so it'll be garbage-collected
                     call_data->set_reply_returned();
@@ -260,8 +257,11 @@ public:
                 else
                 {
                     // Case when receiving an incoming call.
-                    // We'll send the reply and invite a new call.
-                    call_data->send_reply(false);
+                    // We'll first sent the reply back
+                    call_data->send_reply(true); // Mock a success here
+                    std::cout << "Sent reply for task " + std::to_string(call_data->get_task_uuid()) + "\n" << std::flush;
+
+                    // Then invite a new call in
                     call_list.emplace_back(m_service, *m_cq);
                 }
             }

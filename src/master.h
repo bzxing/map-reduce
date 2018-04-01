@@ -128,8 +128,8 @@ public:
 
     // Can only be called by holder of PrivateTaskGeneratorKey
     MapTask(
-          PrivateTaskGeneratorKey
-        , const FileShard & input_shard
+
+          const FileShard & input_shard
         , std::string output_file
         )
     :
@@ -180,8 +180,8 @@ public:
 
     // Can only be called by holder of PrivateTaskGeneratorKey
     ReduceTask(
-          PrivateTaskGeneratorKey
-        , std::string input_file_1
+
+          std::string input_file_1
         , std::string input_file_2
         , std::string output_file
         )
@@ -228,46 +228,6 @@ private:
     std::string m_output_file;
 };
 //// End class ReduceTask ////
-
-class TaskGenerator
-{
-public:
-
-    // Delegate to the constructor of one variant under BaseTask (a.k.a MapTask or Reduce Task).
-    // The parameter "args" must match the construction parameter signature of these
-    // derived class, minus the first couple fields
-    template <class... Args>
-    static std::unique_ptr<Task> generate(
-          TaskType task_type
-        , Args &&... args // Look at the constructor signatures of the derived classes of Task
-        )
-    {
-        std::unique_ptr<Task> m_task;
-
-        if (task_type = kMapTaskType)
-        {
-            m_task = std::make_unique<MapTask>
-                (PrivateTaskGeneratorKey(), std::forward<Args>(args)...);
-        }
-        else if (task_type = kReduceTaskType)
-        {
-            m_task = std::make_unique<ReduceTask>
-                (PrivateTaskGeneratorKey(), std::forward<Args>(args)...);
-        }
-        else
-        {
-            BOOST_ASSERT_MSG(false, "Unknown task type!");
-        }
-
-        BOOST_ASSERT(m_task);
-        return m_task;
-    }
-
-private:
-
-
-};
-
 
 
 // Roles:
@@ -361,7 +321,7 @@ class WorkerPoolManager
             start();
 
             std::cout <<
-                "Worker " + address + " Started! Channel State: "
+                "Worker \"" + address + "\" Started! Channel State: "
                 + std::to_string((long) m_outgoing_channel->GetState(false)) + "\n" << std::flush;
         }
 
@@ -388,6 +348,10 @@ class WorkerPoolManager
                 success = new_task->try_unset_executing();
                 BOOST_ASSERT(success); // Why shouldn't this step pass?
             }
+            else
+            {
+                std::cout << "Task " + std::to_string(new_task->get_id()) + " Assigned!\n" << std::flush;
+            }
             // Else, leave the task state as kExecuting.
 
             return success;
@@ -404,12 +368,12 @@ class WorkerPoolManager
 
             switch (state)
             {
-            case GRPC_CHANNEL_IDLE:
             case GRPC_CHANNEL_SHUTDOWN:
                 return false;
             default:
                 return true;
             }
+            return true;
         }
 
     private:
@@ -443,6 +407,7 @@ class WorkerPoolManager
             }
             //// End Critical Section ////
 
+
             return true;
         }
 
@@ -464,6 +429,7 @@ class WorkerPoolManager
 
         void thread_listening_for_completion()
         {
+            std::cout << "Worker \"" + m_address + "\" started listening for completion!\n" << std::flush;
             for (;;)
             {
                 ScopedLock lock(m_call_data_mutex);
@@ -486,10 +452,12 @@ class WorkerPoolManager
                 {
                     bool change_state_success = task->try_set_completed();
                     BOOST_ASSERT(change_state_success);
+                    std::cout << "Task " + std::to_string(task->get_id()) + " Completed!\n" << std::flush;
                 }
                 else
                 {
                     task->report_execution_failure();
+                    std::cout << "Task " + std::to_string(task->get_id()) + " Failed!\n" << std::flush;
                 }
 
                 // Can release m_call_data now.
@@ -538,6 +506,15 @@ public:
         }
     }
 
+    WorkerManager * get_worker(unsigned i)
+    {
+        if ( i >= m_workers.size() )
+        {
+            return nullptr;
+        }
+        return m_workers[i].get();
+    }
+
     void wait()
     {
         for (const auto & worker_mgr_ptr : m_workers)
@@ -580,6 +557,10 @@ public:
     bool run()
     {
         WorkerPoolManager worker_pool(m_spec);
+
+        // Just a mock, try farm out one task
+        MapTask task( m_shards[0], "mock_output.txt" );
+        worker_pool.get_worker(0)->try_assign_task(&task);
 
         worker_pool.wait();
         return true;
