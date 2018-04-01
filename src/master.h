@@ -553,6 +553,9 @@ private:
 
 class TaskAllocator
 {
+public:
+
+private:
 
 };
 
