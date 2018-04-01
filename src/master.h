@@ -6,6 +6,8 @@
 #include <limits>
 #include <thread>
 
+#include <unistd.h>
+
 
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
@@ -280,7 +282,14 @@ class WorkerPoolManager
                 // Check whether the m_reply indicates the task is accepted (logic level check)
                 if ( m_status.ok() && m_reply.success() )
                 {
-                    BOOST_ASSERT(m_task->get_id() == m_reply.task_uid());
+                    unsigned expected_uid = m_task->get_id();
+                    unsigned actual_uid = m_reply.task_uid();
+                    if (expected_uid != actual_uid)
+                    {
+                        std::cout << ("UID MISMATCH!!!" + std::to_string(expected_uid) + " " + std::to_string(actual_uid) + "\n") << std::flush;
+                    }
+
+                    BOOST_ASSERT(expected_uid == actual_uid);
                     success = true;
                 }
             }
@@ -559,8 +568,28 @@ public:
         WorkerPoolManager worker_pool(m_spec);
 
         // Just a mock, try farm out one task
-        MapTask task( m_shards[0], "mock_output.txt" );
-        worker_pool.get_worker(0)->try_assign_task(&task);
+
+        constexpr unsigned kMaxTask = 262144;
+
+        std::vector<std::unique_ptr<MapTask>> task_vec;
+        for (unsigned i = 0; i < kMaxTask; ++i)
+        {
+            task_vec.push_back( std::make_unique<MapTask>(m_shards[0], "mock_output.txt") );
+        }
+
+        for (;;)
+        {
+            for (auto & task_ptr : task_vec)
+            {
+                if (task_ptr->get_state() == Task::TaskState::kReady)
+                {
+                    worker_pool.get_worker(0)->try_assign_task( task_ptr.get() );
+                }
+
+                usleep(1000);
+            }
+        }
+
 
         worker_pool.wait();
         return true;
