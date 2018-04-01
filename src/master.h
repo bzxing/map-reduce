@@ -26,10 +26,12 @@
 using ScopedLock = std::unique_lock<std::mutex>;
 
 constexpr int kTaskExecutionTimeout = 10;
+constexpr unsigned kTaskMaxNumAttempts = 5;
 
 using TaskType = typename masterworker::TaskRequest::TaskType;
 constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
 constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
+
 
 struct PrivateTaskGeneratorKey
 {
@@ -38,19 +40,87 @@ private:
     PrivateTaskGeneratorKey() {};
 };
 
+
+
 class Task
 {
 public:
+    enum class TaskState
+    {
+        kReady,
+        kExecuting,
+        kCompleted,
+        kFailedUnrecoverable
+    };
+
+    Task() :
+        m_uid( s_task_uid.fetch_and_increment() )
+    {
+
+    }
+
     virtual ~Task() {}
 
-    virtual unsigned get_id() const = 0;
+    unsigned get_id() const
+    {
+        return m_uid;
+    }
 
     virtual TaskType get_task_type() const = 0;
 
     virtual masterworker::TaskRequest generate_request_message() const = 0;
 
+    // Defines 3 valid state transactions
+    bool try_set_executing()
+    {
+        return try_change_state(TaskState::kReady, TaskState::kExecuting);
+    }
+    bool try_unset_executing()
+    {
+        return try_change_state(TaskState::kExecuting, TaskState::kReady);
+    }
+    bool try_set_completed()
+    {
+        return try_change_state(TaskState::kExecuting, TaskState::kCompleted);
+    }
+
+    void report_execution_failure()
+    {
+        unsigned current_failure_count = m_failure_counter.fetch_and_increment() + 1;
+
+        bool change_state_success = false;
+        if (current_failure_count > kTaskMaxNumAttempts)
+        {
+            change_state_success = try_change_state(TaskState::kExecuting, TaskState::kFailedUnrecoverable);
+        }
+        else
+        {
+            change_state_success = try_change_state(TaskState::kExecuting, TaskState::kReady);
+        }
+
+        BOOST_ASSERT(change_state_success);
+    }
+
+    TaskState get_state() const
+    {
+        return m_state;
+    }
+
 private:
+    bool try_change_state(TaskState prev_state, TaskState next_state)
+    {
+        TaskState snapshot = m_state.compare_and_swap(next_state, prev_state);
+        return snapshot == prev_state;
+    }
+
+    unsigned m_uid = 0;
+    tbb::atomic<TaskState> m_state = TaskState::kReady;
+    tbb::atomic<unsigned> m_failure_counter = 0;
+
+    static tbb::atomic<unsigned> s_task_uid;
 };
+
+tbb::atomic<unsigned> Task::s_task_uid = 0;
 
 //// Begin class MapTask ////
 class MapTask : public Task
@@ -60,24 +130,17 @@ public:
     // Can only be called by holder of PrivateTaskGeneratorKey
     MapTask(
           PrivateTaskGeneratorKey
-        , unsigned uid
         , const FileShard & input_shard
         , std::string output_file
         )
     :
-          m_uid( uid )
-        , m_input_shard( input_shard )
+          m_input_shard( input_shard )
         , m_output_file( std::move(output_file) )
     {}
 
     // Non-copyable because UID
     MapTask(const MapTask &) = delete;
     MapTask & operator=(const MapTask &) = delete;
-
-    virtual unsigned get_id() const override
-    {
-        return m_uid;
-    }
 
     virtual TaskType get_task_type() const override
     {
@@ -87,7 +150,7 @@ public:
     virtual masterworker::TaskRequest generate_request_message() const override
     {
         masterworker::TaskRequest msg;
-        msg.set_task_uid( m_uid );
+        msg.set_task_uid( get_id() );
         msg.set_task_type( get_task_type() );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_shard );
         msg.set_output_file( m_output_file );
@@ -105,7 +168,6 @@ private:
         return msg;
     }
 
-    unsigned m_uid = 0;
     const FileShard & m_input_shard;
     std::string m_output_file;
 };
@@ -120,14 +182,12 @@ public:
     // Can only be called by holder of PrivateTaskGeneratorKey
     ReduceTask(
           PrivateTaskGeneratorKey
-        , unsigned uid
         , std::string input_file_1
         , std::string input_file_2
         , std::string output_file
         )
     :
-          m_uid( uid )
-        , m_input_file_1( std::move(input_file_1) )
+          m_input_file_1( std::move(input_file_1) )
         , m_input_file_2( std::move(input_file_2) )
         , m_output_file( std::move(output_file) )
     {}
@@ -135,11 +195,6 @@ public:
     // Non-copyable because UID
     ReduceTask(const ReduceTask &) = delete;
     ReduceTask & operator=(const ReduceTask &) = delete;
-
-    virtual unsigned get_id() const override
-    {
-        return m_uid;
-    }
 
     virtual TaskType get_task_type() const override
     {
@@ -149,7 +204,7 @@ public:
     virtual masterworker::TaskRequest generate_request_message() const override
     {
         masterworker::TaskRequest msg;
-        msg.set_task_uid( m_uid );
+        msg.set_task_uid( get_id() );
         msg.set_task_type( get_task_type() );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_file_1 );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_file_2 );
@@ -169,7 +224,6 @@ private:
         return msg;
     }
 
-    unsigned m_uid = 0;
     std::string m_input_file_1;
     std::string m_input_file_2;
     std::string m_output_file;
@@ -190,17 +244,16 @@ public:
         )
     {
         std::unique_ptr<Task> m_task;
-        const unsigned uid = s_task_uid.fetch_and_increment();
 
         if (task_type = kMapTaskType)
         {
             m_task = std::make_unique<MapTask>
-                (PrivateTaskGeneratorKey(), uid, std::forward<Args>(args)...);
+                (PrivateTaskGeneratorKey(), std::forward<Args>(args)...);
         }
         else if (task_type = kReduceTaskType)
         {
             m_task = std::make_unique<ReduceTask>
-                (PrivateTaskGeneratorKey(), uid, std::forward<Args>(args)...);
+                (PrivateTaskGeneratorKey(), std::forward<Args>(args)...);
         }
         else
         {
@@ -213,15 +266,10 @@ public:
 
 private:
 
-    static tbb::atomic<unsigned> s_task_uid;
-};
-
-tbb::atomic<unsigned> TaskGenerator::s_task_uid = 0;
-
-class CallDoneNotifier
-{
 
 };
+
+
 
 // Roles:
 //  - Keeps connection session for each worker
@@ -234,12 +282,13 @@ class WorkerPoolManager
     using Responder = grpc::ClientAsyncResponseReader<Reply>;
     using NextStatus = grpc::CompletionQueue::NextStatus;
 
-    class Call
+    //// Begin class CallData ////
+    class CallData
     {
     public:
 
         // Constructor will issue a call
-        Call( const Task * const task , masterworker::WorkerService::Stub & stub ) :
+        CallData( const Task * const task , masterworker::WorkerService::Stub & stub ) :
             m_task(task)
         {
             BOOST_ASSERT(task);
@@ -249,7 +298,6 @@ class WorkerPoolManager
             m_responder->StartCall();
             m_responder->Finish(&m_reply, &m_status, this);
         }
-
 
         bool try_get_result()
         {
@@ -302,6 +350,7 @@ class WorkerPoolManager
         Reply m_reply;
         grpc::Status m_status;
     };
+    // End class CallData ////
 
     // Begin class WorkerManager //
     class WorkerManager
@@ -317,36 +366,32 @@ class WorkerPoolManager
                 + std::to_string((long) m_outgoing_channel->GetState(false)) + "\n" << std::flush;
         }
 
-
-        bool try_assign_task(const Task * const new_task)
+        bool try_assign_task(Task * const new_task)
         {
-            BOOST_ASSERT(m_outgoing_channel);
-            BOOST_ASSERT(m_outgoing_stub);
-
             BOOST_ASSERT(new_task);
 
-            if (!connection_is_available())
+            bool success = true;
+
+            if (success)
             {
-                return false;
+                success = new_task->try_set_executing();
+                BOOST_ASSERT(success); // Why shouldn't this step pass?
             }
 
-            ScopedLock lock(m_mutex);
-
-            // If channel is idle or shutdown, reject it
-
-
-            // Check if worker is currently executing. Reject if it is.
-            if (m_call_data)
+            if (success)
             {
-                return false;
+                success = try_contact_worker_for_assigning_task(new_task);
             }
 
-            // Try farm out the task to worker. Constructor will make the call
-            m_call_data = std::make_unique<Call>(new_task, *m_outgoing_stub);
+            // Revert the task state, if task assignment failed.
+            if (!success)
+            {
+                success = new_task->try_unset_executing();
+                BOOST_ASSERT(success); // Why shouldn't this step pass?
+            }
+            // Else, leave the task state as kExecuting.
 
-            m_cv.notify_one();
-
-            return true;
+            return success;
         }
 
         void wait()
@@ -370,6 +415,38 @@ class WorkerPoolManager
 
     private:
 
+        bool try_contact_worker_for_assigning_task(const Task * const new_task)
+        {
+            BOOST_ASSERT(m_outgoing_channel);
+            BOOST_ASSERT(m_outgoing_stub);
+
+            BOOST_ASSERT(new_task);
+
+            // If channel is unavailable, reject it
+            if (!connection_is_available())
+            {
+                return false;
+            }
+
+            //// Begin Critical Section ////
+            {
+                ScopedLock lock(m_call_data_mutex);
+
+                // Check if worker is currently executing. Reject if it is.
+                if (m_call_data)
+                {
+                    return false;
+                }
+
+                // Try farm out the task to worker. Constructor will make the call
+                m_call_data = std::make_unique<CallData>(new_task, *m_outgoing_stub);
+                m_call_data_cv.notify_one();
+            }
+            //// End Critical Section ////
+
+            return true;
+        }
+
         void start()
         {
             m_outgoing_channel = grpc::CreateChannel(m_address, grpc::InsecureChannelCredentials());
@@ -390,34 +467,41 @@ class WorkerPoolManager
         {
             for (;;)
             {
-                ScopedLock lock(m_mutex);
+                ScopedLock lock(m_call_data_mutex);
 
-                // Block until m_call_data is present.
+                // Block until a new m_call_data is present.
                 while (!m_call_data)
                 {
-                    m_cv.wait(lock);
+                    m_call_data_cv.wait(lock);
                 }
 
                 bool success = m_call_data->try_get_result();
+                // The use of const_cast here is legitimate because
+                // WorkerManager created CallData with non-const pointer
+                // in the first place, and CallData class is privately defined
+                // in WorkerManager.
+                Task * task = const_cast<Task *>(m_call_data->get_task());
+                BOOST_ASSERT(task);
 
                 if (success)
                 {
-                    // TODO: Handle success
+                    bool change_state_success = task->try_set_completed();
+                    BOOST_ASSERT(change_state_success);
                 }
                 else
                 {
-                    // TODO: Handle failure
+                    task->report_execution_failure();
                 }
 
-                // Can release m_call_data
+                // Can release m_call_data now.
                 m_call_data = nullptr;
             }
         }
 
         //// Data Fields /////
-        std::mutex m_mutex; // Guard everything non-const below.
+        std::mutex m_call_data_mutex; // Guard everything non-const below.
                             // These fields are accessed by multiple threads.
-        std::condition_variable m_cv; // Used to notify the completion thread
+        std::condition_variable m_call_data_cv; // Used to notify the completion thread
                                       // when there's a worker starting.
 
         // Server address, defined at construction time
@@ -431,7 +515,7 @@ class WorkerPoolManager
         // Also used to atomically indicate whether worker is busy or not, to
         // the best of the master's knowledge
         // It can only change in two ways: nullptr to task, or task to nullptr.
-        std::unique_ptr<Call> m_call_data;
+        std::unique_ptr<CallData> m_call_data;
 
         std::thread m_listen_for_completion_thread;
     };
