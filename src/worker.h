@@ -44,9 +44,9 @@ class Listener
     {
         enum class Status
         {
-            kRequesting,
-            kFinishing,
-            kDone
+            kWaitingForCall,
+            kSentResponse,
+            kCanDestroy
         };
 
     public:
@@ -74,7 +74,7 @@ class Listener
 
         masterworker::TaskRequest request;
         masterworker::TaskAck reply;
-        Status m_status = Status::kRequesting;
+        Status m_status = Status::kWaitingForCall;
 
     };
 
