@@ -20,28 +20,6 @@
 #include <boost/range/iterator_range.hpp>
 #include <boost/filesystem.hpp>
 
-namespace boost
-{
-    inline void assertion_failed_msg(
-        char const * expr, char const * msg, char const * func, char const * file, long line)
-    {
-        std::ostringstream oss;
-        oss << "Assertion failed at file " << file << " line " << line << std::endl;
-        oss << "Function: " << func << std::endl;
-        oss << "Expression: " << expr << std::endl;
-        oss << "Message: " << msg << std::endl;
-
-        std::cerr << oss.str() << std::flush;
-        std::abort();
-    }
-
-    inline void assertion_failed(
-        char const * expr, char const * func, char const * file, long line)
-    {
-        assertion_failed_msg(expr, "", func, file, line);
-    }
-}
-
 
 /* CS6210_TASK: Create your data structure here for storing spec from the config file */
 class MapReduceSpec

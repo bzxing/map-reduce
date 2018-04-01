@@ -10,7 +10,6 @@
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
 #include <boost/range/iterator_range.hpp>
-#include <boost/variant.hpp>
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>

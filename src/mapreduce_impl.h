@@ -5,7 +5,7 @@
 
 
 class MapReduceImpl {
-	
+
 	public:
 		/* DON'T change this function declaration */
 		bool run(const std::string& config_filename);
@@ -18,5 +18,6 @@ class MapReduceImpl {
 
 		MapReduceSpec mr_spec_;
 		std::vector<FileShard> file_shards_;
+
 
 };

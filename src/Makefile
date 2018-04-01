@@ -3,7 +3,7 @@ CPPFLAGS += -I/usr/local/include -pthread
 
 CXXFLAGS += \
 -std=c++14 -g \
--DBOOST_ENABLE_ASSERT_HANDLER \
+-include my_assert.h \
 -Wall -Wextra -Werror -Wconversion \
 -Wno-unused-parameter -Wno-unused-result -Wno-unused-variable \
 -Wno-unused-but-set-variable  -Wno-unused-function

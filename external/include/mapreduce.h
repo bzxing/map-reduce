@@ -16,6 +16,8 @@ class MapReduce {
         bool run(const std::string& config_filename);
 
     private:
-        MapReduceImpl * impl_;
+        MapReduceImpl * impl_ = nullptr;
+
+        FaultHandlerSetter m_fault_handler; //Hack...
 
 };

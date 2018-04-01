@@ -7,7 +7,7 @@
 #include <mr_task_factory.h>
 
 
-BaseMapper::BaseMapper() : impl_(new BaseMapperInternal) {}
+BaseMapper::BaseMapper() : impl_(new BaseMapperInternal) {} // This is a bad memory leak.
 
 BaseMapper::~BaseMapper() {}
 
@@ -16,7 +16,7 @@ void BaseMapper::emit(const std::string& key, const std::string& val) {
 }
 
 
-BaseReducer::BaseReducer() : impl_(new BaseReducerInternal) {}
+BaseReducer::BaseReducer() : impl_(new BaseReducerInternal) {} // This is a bad memory leak.
 
 BaseReducer::~BaseReducer() {}
 
