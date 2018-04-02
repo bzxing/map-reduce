@@ -6,6 +6,11 @@
 #include <list>
 #include <memory>
 #include <utility>
+#include <string>
+
+#include <iostream>
+#include <sstream>
+#include <fstream>
 
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
@@ -251,6 +256,7 @@ private:
         const auto & request = call->get_request();
         TaskType task_type = request.task_type();
         const std::string & user_id = request.user_id();
+        const unsigned task_uuid = call->get_task_uuid();
 
         BOOST_ASSERT(task_type == kMapTaskType);
 
@@ -258,14 +264,20 @@ private:
         auto mapper_ptr = get_mapper_from_task_factory(user_id);
         if (!mapper_ptr)
         {
-            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " failed due to unregistered mapper!\n" << std::flush;
+            std::cout << "Task " + std::to_string(task_uuid) + " failed due to unregistered mapper!\n" << std::flush;
             return false;
         }
+
+        // Open output file
+        std::ofstream ofs( request.output_file(), std::ios::app );
+        ofs << std::to_string(task_uuid) + "\n" << std::flush;
 
         // Read each record in the input shard, and write to output file
         for (const auto & shard : request.input_file())
         {
-
+            const std::string & filename = shard.filename();
+            unsigned offset = shard.offset();
+            unsigned length = shard.length();
         }
 
 
@@ -279,14 +291,25 @@ private:
         const auto & request = call->get_request();
         TaskType task_type = request.task_type();
         const std::string & user_id = request.user_id();
+        const unsigned task_uuid = call->get_task_uuid();
 
         BOOST_ASSERT(task_type == kReduceTaskType);
 
         auto reducer_ptr = get_reducer_from_task_factory(user_id);
         if (!reducer_ptr)
         {
-            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " failed due to unregistered reducer!\n" << std::flush;
+            std::cout << "Task " + std::to_string(task_uuid) + " failed due to unregistered reducer!\n" << std::flush;
             return false;
+        }
+
+        std::ofstream ofs( request.output_file(), std::ios::app );
+        ofs << std::to_string(task_uuid) + "\n" << std::flush;
+
+        for (const auto & shard : request.input_file())
+        {
+            const std::string & filename = shard.filename();
+            unsigned offset = shard.offset();
+            unsigned length = shard.length();
         }
 
         return true;
