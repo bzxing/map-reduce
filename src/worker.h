@@ -197,6 +197,8 @@ public:
         // The constructor will open the worker up for incoming calls.
         call_list.emplace_back(m_service, *m_cq);
 
+        std::cout << "Start listening on " + addr + "\n" << std::flush;
+
 
         // Loop waiting on the completion queue.
         // The queue will return either an incoming request,
@@ -220,19 +222,24 @@ public:
 
                 const gpr_timespec curr_time = gpr_now(kClockType);
 
+                unsigned destruction_count = 0;
                 for (auto iter = call_list.begin(); iter != call_list.end(); )
                 {
                     if (iter->should_destroy(curr_time))
                     {
-                        std::cout << "Destroying request for Task "
-                            + std::to_string(iter->get_task_uuid()) + "\n" << std::flush;
+                        // std::cout << "Destroying request for Task "
+                        //     + std::to_string(iter->get_task_uuid()) + "\n" << std::flush;
                         iter = call_list.erase(iter);
+                        ++destruction_count;
                     }
                     else
                     {
                         ++iter;
                     }
                 }
+
+                std::cout << "Destroyed " + std::to_string(destruction_count) + " requests. "
+                    + std::to_string(call_list.size()) + " left pending.";
             }
 
             // Process returned request on the completion queue

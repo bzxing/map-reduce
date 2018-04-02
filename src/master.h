@@ -85,14 +85,16 @@ public:
         return try_change_state(TaskState::kExecuting, TaskState::kCompleted);
     }
 
-    void report_execution_failure()
+    bool report_execution_failure()
     {
         unsigned current_failure_count = m_failure_counter.fetch_and_increment() + 1;
+        bool perm_fail = false;
 
         bool change_state_success = false;
         if (current_failure_count > kTaskMaxNumAttempts)
         {
             change_state_success = try_change_state(TaskState::kExecuting, TaskState::kFailedUnrecoverable);
+            perm_fail = true;
         }
         else
         {
@@ -100,6 +102,7 @@ public:
         }
 
         BOOST_ASSERT(change_state_success);
+        return perm_fail;
     }
 
     TaskState get_state() const
