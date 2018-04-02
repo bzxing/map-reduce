@@ -224,8 +224,8 @@ private:
         // Mock
         std::this_thread::sleep_for(std::chrono::seconds(1));
 
-
-        TaskType task_type = call->get_request().task_type();
+        const auto & request = call->get_request();
+        TaskType task_type = request.task_type();
 
         if (task_type == kMapTaskType)
         {
@@ -238,31 +238,54 @@ private:
         else
         {
             // Failed due to unknown task type!
-            std::cout << "Task " + std::to_string(call->get_task_uuid()) + "failed due to unknown task type!\n" << std::flush;
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " failed due to unknown task type!\n" << std::flush;
             return false;
         }
     }
 
     bool execute_map_task(CallData * call)
     {
-        const std::string & user_id = call->get_request().user_id();
+        // Perform a series of steps. If one step fails, exit directly while printing a message.
+        // If all steps succeeds, don't print anything.
+
+        const auto & request = call->get_request();
+        TaskType task_type = request.task_type();
+        const std::string & user_id = request.user_id();
+
+        BOOST_ASSERT(task_type == kMapTaskType);
+
+        // Get mapper
         auto mapper_ptr = get_mapper_from_task_factory(user_id);
         if (!mapper_ptr)
         {
-            std::cout << "Task " + std::to_string(call->get_task_uuid()) + "failed due to unregistered mapper!\n" << std::flush;
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " failed due to unregistered mapper!\n" << std::flush;
             return false;
         }
+
+        // Read each record in the input shard, and write to output file
+        for (const auto & shard : request.input_file())
+        {
+
+        }
+
+
+
 
         return true;
     }
 
     bool execute_reduce_task(CallData * call)
     {
-        const std::string & user_id = call->get_request().user_id();
+        const auto & request = call->get_request();
+        TaskType task_type = request.task_type();
+        const std::string & user_id = request.user_id();
+
+        BOOST_ASSERT(task_type == kReduceTaskType);
+
         auto reducer_ptr = get_reducer_from_task_factory(user_id);
         if (!reducer_ptr)
         {
-            std::cout << "Task " + std::to_string(call->get_task_uuid()) + "failed due to unregistered reducer!\n" << std::flush;
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " failed due to unregistered reducer!\n" << std::flush;
             return false;
         }
 
