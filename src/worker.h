@@ -18,6 +18,8 @@
 #include <mr_task_factory.h>
 #include "mr_tasks.h"
 
+#include "my_utils.h"
+
 
 std::shared_ptr<BaseMapper> get_mapper_from_task_factory(const std::string& user_id);
 std::shared_ptr<BaseReducer> get_reducer_from_task_factory(const std::string& user_id);
@@ -28,30 +30,10 @@ namespace
     using ScopedLock = std::unique_lock<std::mutex>;
 
     static constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
-    static constexpr int kSendReplyTimeout = 5;
-    static constexpr int kServerCqTimeout = 2;
+    static constexpr gpr_timespec kSendReplyTimeout = make_milliseconds(15'000, kClockType);
+    static constexpr gpr_timespec kServerCqTimeout = make_milliseconds(500, kClockType);
     static constexpr unsigned kCallListGarbageCollectInterval = 16;
 
-    inline gpr_timespec operator-(const gpr_timespec & a, const gpr_timespec & b)
-    {
-        BOOST_ASSERT(a.clock_type == b.clock_type);
-
-        int32_t nano_diff = a.tv_nsec - b.tv_nsec;
-        int64_t sec_diff = a.tv_sec - b.tv_sec;
-
-        if (nano_diff < 0)
-        {
-            constexpr int32_t ns_in_sec = 1'000'000'000;
-            nano_diff += ns_in_sec;
-            --sec_diff;
-        }
-
-        gpr_timespec diff;
-        diff.tv_sec = sec_diff;
-        diff.tv_nsec = nano_diff;
-        diff.clock_type = a.clock_type;
-        return diff;
-    }
 }
 
 class CallData
@@ -111,7 +93,7 @@ private:
         if (m_send_reply_time)
         {
             gpr_timespec time_diff = curr_time - *m_send_reply_time;
-            if (time_diff.tv_sec >= kSendReplyTimeout)
+            if (time_diff >= kSendReplyTimeout)
             {
                 return true;
             }
@@ -332,8 +314,7 @@ public:
             // Process returned request on the completion queue
             void * tag = nullptr;
             bool ok = false;
-            gpr_timespec deadline = gpr_now(kClockType);
-            deadline.tv_sec += kServerCqTimeout;
+            gpr_timespec deadline = gpr_now(kClockType) + kServerCqTimeout;
 
             CqNextStatus status = m_cq->AsyncNext(&tag, &ok, deadline);
 

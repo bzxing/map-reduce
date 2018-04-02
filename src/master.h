@@ -24,14 +24,20 @@
 #include "mapreduce_spec.h"
 #include "file_shard.h"
 
+#include "my_utils.h"
+
 using ScopedLock = std::unique_lock<std::mutex>;
 
-constexpr int kTaskExecutionTimeout = 10;
+constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
+
+constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
+
 constexpr unsigned kTaskMaxNumAttempts = 5;
 
 using TaskType = typename masterworker::TaskRequest::TaskType;
 constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
 constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
+
 
 
 struct PrivateTaskGeneratorKey
@@ -256,7 +262,7 @@ class WorkerPoolManager
             m_task(task)
         {
             BOOST_ASSERT(task);
-            m_timestamp = gpr_now(GPR_CLOCK_MONOTONIC);
+            m_timestamp = gpr_now(kClockType);
             m_responder = stub.PrepareAsyncDispatchTaskToWorker
                 (&m_context, task->generate_request_message(), &m_cq);
             m_responder->StartCall();
@@ -265,8 +271,7 @@ class WorkerPoolManager
 
         bool try_get_result()
         {
-            gpr_timespec deadline = m_timestamp;
-            deadline.tv_sec += kTaskExecutionTimeout;
+            gpr_timespec deadline = m_timestamp + kTaskExecutionTimeout;
 
             void * receive_tag = nullptr;
             bool ok = false;
@@ -359,6 +364,7 @@ class WorkerPoolManager
             {
                 success = new_task->try_unset_executing();
                 BOOST_ASSERT(success); // Why shouldn't this step pass?
+                //std::cout << "Task " + std::to_string(new_task->get_id()) + " Rejected!\n" << std::flush;
             }
             else
             {
@@ -405,22 +411,30 @@ class WorkerPoolManager
 
             //// Begin Critical Section ////
             {
-                ScopedLock lock(m_call_data_mutex);
+                ScopedLock lock(m_call_data_mutex, std::try_to_lock);
 
-                // Check if worker is currently executing. Reject if it is.
-                if (m_call_data)
+                if (lock)
                 {
+                    // Check if worker is currently executing. Reject if it is.
+                    if (m_call_data)
+                    {
+                        return false;
+                    }
+
+                    // Try farm out the task to worker. Constructor will make the call
+                    m_call_data = std::make_unique<CallData>(new_task, *m_outgoing_stub);
+                    m_call_data_cv.notify_one();
+
+                    return true;
+                }
+                else
+                {
+                    // Lock acquisition failed, meaning worker might be busy.
+                    // Try again.
                     return false;
                 }
-
-                // Try farm out the task to worker. Constructor will make the call
-                m_call_data = std::make_unique<CallData>(new_task, *m_outgoing_stub);
-                m_call_data_cv.notify_one();
             }
             //// End Critical Section ////
-
-
-            return true;
         }
 
         void start()
@@ -442,10 +456,11 @@ class WorkerPoolManager
         void thread_listening_for_completion()
         {
             std::cout << "Worker \"" + m_address + "\" started listening for completion!\n" << std::flush;
+
+            ScopedLock lock(m_call_data_mutex);
+
             for (;;)
             {
-                ScopedLock lock(m_call_data_mutex);
-
                 // Block until a new m_call_data is present.
                 while (!m_call_data)
                 {
