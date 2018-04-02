@@ -34,9 +34,13 @@ constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockT
 
 constexpr unsigned kTaskMaxNumAttempts = 5;
 
-using TaskType = typename masterworker::TaskRequest::TaskType;
-constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
-constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
+
+namespace
+{
+    // File-scope pointer to Spec due to laziness. Sorry..
+    // It should be set during the scope of Master::run()
+    const MapReduceSpec * g_master_run_spec = nullptr;
+}
 
 
 
@@ -161,6 +165,7 @@ public:
     {
         masterworker::TaskRequest msg;
         msg.set_task_uid( get_id() );
+        msg.set_user_id( g_master_run_spec->get_user_id() );
         msg.set_task_type( get_task_type() );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_shard );
         msg.set_output_file( m_output_file );
@@ -215,6 +220,7 @@ public:
     {
         masterworker::TaskRequest msg;
         msg.set_task_uid( get_id() );
+        msg.set_user_id( g_master_run_spec->get_user_id() );
         msg.set_task_type( get_task_type() );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_file_1 );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_file_2 );
@@ -583,6 +589,8 @@ public:
 
     bool run()
     {
+        g_master_run_spec = &m_spec;
+
         WorkerPoolManager worker_pool(m_spec);
 
         // Just a mock, try farm out one task
@@ -610,6 +618,8 @@ public:
 
 
         worker_pool.wait();
+
+        g_master_run_spec = nullptr;
         return true;
     }
 

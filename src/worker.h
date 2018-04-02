@@ -86,6 +86,11 @@ public:
         return m_request.task_uid();
     }
 
+    const masterworker::TaskRequest & get_request() const
+    {
+        return m_request;
+    }
+
 private:
 
     bool send_reply_has_timed_out( const gpr_timespec & curr_time ) const
@@ -185,7 +190,12 @@ private:
             CallData * call = wait_for_call();
             std::cout << "Accepting task " + std::to_string(call->get_task_uuid()) + "!\n" << std::flush;
 
-            bool success = internal_execute_task(call);
+            bool success = execute_task_internal(call);
+
+            if (success)
+            {
+                std::cout << "Task " + std::to_string(call->get_task_uuid()) + " execution successful!\n" << std::flush;
+            }
             call->send_reply(success);
 
             unset_call(call);
@@ -206,11 +216,55 @@ private:
         return m_call;
     }
 
-    bool internal_execute_task(CallData * call)
+    // Invoke the mapper or reducer
+    bool execute_task_internal(CallData * call)
     {
         BOOST_ASSERT(call);
 
+        // Mock
         std::this_thread::sleep_for(std::chrono::seconds(1));
+
+
+        TaskType task_type = call->get_request().task_type();
+
+        if (task_type == kMapTaskType)
+        {
+            return execute_map_task(call);
+        }
+        else if (task_type == kReduceTaskType)
+        {
+            return execute_reduce_task(call);
+        }
+        else
+        {
+            // Failed due to unknown task type!
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + "failed due to unknown task type!\n" << std::flush;
+            return false;
+        }
+    }
+
+    bool execute_map_task(CallData * call)
+    {
+        const std::string & user_id = call->get_request().user_id();
+        auto mapper_ptr = get_mapper_from_task_factory(user_id);
+        if (!mapper_ptr)
+        {
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + "failed due to unregistered mapper!\n" << std::flush;
+            return false;
+        }
+
+        return true;
+    }
+
+    bool execute_reduce_task(CallData * call)
+    {
+        const std::string & user_id = call->get_request().user_id();
+        auto reducer_ptr = get_reducer_from_task_factory(user_id);
+        if (!reducer_ptr)
+        {
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + "failed due to unregistered reducer!\n" << std::flush;
+            return false;
+        }
 
         return true;
     }

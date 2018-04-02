@@ -28,7 +28,7 @@ struct BaseMapperInternal
 /*-----------------------------------------------------------------------------------------------*/
 
 
-/* CS6210_TASK Implement this data structureas per your implementation.
+/* CS6210_TASK Implement this data structure as per your implementation.
 		You will need this when your worker is running the reduce task*/
 struct BaseReducerInternal
 {

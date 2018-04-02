@@ -53,7 +53,6 @@ namespace {
 
 	TaskFactory::TaskFactory() {}
 
-
 	std::shared_ptr<BaseMapper> TaskFactory::get_mapper(const std::string& user_id) {
 		auto itr = mappers_.find(user_id);
 		if (itr == mappers_.end())

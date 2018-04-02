@@ -19,11 +19,12 @@ message TaskRequest
 	}
 
 	uint32 task_uid = 1;
-	TaskType task_type = 2;
+    string user_id = 2;
+	TaskType task_type = 3;
 
-	repeated FileShard input_file = 3; // length & offset are ignored for reduction
+	repeated FileShard input_file = 4; // length & offset are ignored for reduction
 
-	string output_file = 4;
+	string output_file = 5;
 }
 
 message TaskAck

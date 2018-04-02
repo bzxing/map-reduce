@@ -138,6 +138,11 @@ public:
         return m_map_kilobytes;
     }
 
+    const std::string & get_user_id() const
+    {
+        return m_user_id;
+    }
+
 private:
 
     static ParseLineResult generic_parse_unsigned(const std::string & arg, unsigned & target)
