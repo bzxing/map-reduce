@@ -30,21 +30,17 @@
 
 
 // I know it's a header file and unnamed namespace does nothing...But I'm too lazy :P
-namespace
-{
-    using ScopedLock = std::unique_lock<std::mutex>;
 
-    constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
 
-    constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
-    constexpr gpr_timespec kWorkerConfigTimeout = make_milliseconds(5'000, kClockType);
+constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
+constexpr gpr_timespec kWorkerConfigTimeout = make_milliseconds(5'000, kClockType);
 
-    constexpr unsigned kTaskMaxNumAttempts = 5;
+constexpr unsigned kTaskMaxNumAttempts = 5;
 
-    // File-scope pointer to Spec due to laziness. Sorry..
-    // It should be set during the scope of Master::run()
-    const MapReduceSpec * g_master_run_spec = nullptr;
-}
+// File-scope pointer to Spec due to laziness. Sorry..
+// It should be set during the scope of Master::run()
+const MapReduceSpec * g_master_run_spec = nullptr;
+
 
 
 

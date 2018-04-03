@@ -7,6 +7,9 @@
 #include "masterworker.grpc.pb.h"
 #include "masterworker.pb.h"
 
+using ScopedLock = std::unique_lock<std::mutex>;
+constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
+
 using TaskType = typename masterworker::TaskRequest::TaskType;
 constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
 constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
@@ -56,7 +59,7 @@ inline gpr_timespec operator-(const gpr_timespec & a, const gpr_timespec & b)
     return diff;
 }
 
-inline constexpr gpr_timespec make_milliseconds(int32_t mills, gpr_clock_type clock_type)
+inline constexpr gpr_timespec make_milliseconds(int32_t mills, gpr_clock_type clock_type = kClockType)
 {
     BOOST_ASSERT(mills >= 0);
     constexpr int32_t mills_in_sec = 1'000;

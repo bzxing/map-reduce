@@ -30,16 +30,45 @@ std::shared_ptr<BaseMapper> get_mapper_from_task_factory(const std::string& user
 std::shared_ptr<BaseReducer> get_reducer_from_task_factory(const std::string& user_id);
 
 
-namespace
+constexpr gpr_timespec kSendReplyTimeout = make_milliseconds(15'000, kClockType);
+constexpr gpr_timespec kServerCqTimeout = make_milliseconds(500, kClockType);
+constexpr unsigned kCallListGarbageCollectInterval = 16;
+
+class WorkerConfig
 {
-    using ScopedLock = std::unique_lock<std::mutex>;
+    struct PrivateCtorKey {};
 
-    static constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
-    static constexpr gpr_timespec kSendReplyTimeout = make_milliseconds(15'000, kClockType);
-    static constexpr gpr_timespec kServerCqTimeout = make_milliseconds(500, kClockType);
-    static constexpr unsigned kCallListGarbageCollectInterval = 16;
+public:
+    static void install_config( std::string && output_dir, unsigned num_output_files )
+    {
+        BOOST_ASSERT(!s_inst);
+        s_inst = std::make_unique<WorkerConfig>(
+            PrivateCtorKey(), std::move(output_dir), num_output_files );
+        std::cout << "Configuration success!\n" << std::flush;
 
-}
+    }
+
+    static const WorkerConfig * get_config()
+    {
+        return s_inst.get();
+    }
+
+    WorkerConfig( const PrivateCtorKey &, std::string && output_dir, unsigned num_output_files ) :
+          m_output_dir( std::move(output_dir) )
+        , m_num_output_files( num_output_files )
+    {
+
+    }
+
+private:
+
+    std::string m_output_dir;
+    unsigned m_num_output_files = 0;
+
+    static std::unique_ptr<WorkerConfig> s_inst;
+};
+
+std::unique_ptr<WorkerConfig> WorkerConfig::s_inst;
 
 class CallData
 {
@@ -335,16 +364,10 @@ private:
 class Server
 {
 public:
+    using CqNextStatus = grpc::CompletionQueue::NextStatus;
 
     Server(const std::string & addr)
     {
-        m_listening_thread = std::thread([&]() { start_listening_loop(addr); });
-    }
-
-    void start_listening_loop(const std::string & addr)
-    {
-        using CqNextStatus = grpc::CompletionQueue::NextStatus;
-
         grpc::ServerBuilder builder;
         builder.AddListeningPort(addr, grpc::InsecureServerCredentials());
         builder.RegisterService(&m_service);
@@ -352,6 +375,75 @@ public:
         m_cq = builder.AddCompletionQueue();
         m_server = builder.BuildAndStart();
 
+        std::cout << "Waiting for configuration on " + addr + "\n" << std::flush;
+        wait_for_config();
+
+        std::cout << "Start accepting tasks on " + addr + "\n" << std::flush;
+        m_listening_thread = std::thread([&]() { start_listening_loop(); });
+    }
+
+    void wait()
+    {
+        m_listening_thread.join();
+    }
+
+private:
+
+    void wait_for_config()
+    {
+        // States to keep
+        grpc::ServerContext context;
+        grpc::ServerAsyncResponseWriter<masterworker::Ack> responder(&context);
+        masterworker::WorkerConfig config;
+
+        // Request a call
+        m_service.RequestSetConfig(
+              &context
+            , &config
+            , &responder
+            , m_cq.get()
+            , m_cq.get()
+            , this
+        );
+
+        // Accept a call
+        {
+            void * tag = nullptr;
+            bool ok = false;
+            bool success = m_cq->Next(&tag, &ok);
+
+            BOOST_ASSERT_MSG(success && ok && tag == this, "Failed receiving worker configuration");
+        }
+
+        // Install the configuration!
+        {
+            WorkerConfig::install_config(
+                  std::move( *config.mutable_output_dir() )
+                , config.num_output_files()
+            );
+        }
+
+        // Return the call
+        masterworker::Ack ack;
+        {
+            ack.set_success(true);
+            responder.Finish(ack, grpc::Status::OK, this);
+        }
+
+
+        // Make sure the call will be received
+        {
+            void * tag = nullptr;
+            bool ok = false;
+            bool success = m_cq->Next(&tag, &ok);
+
+            BOOST_ASSERT_MSG(success && ok && tag == this, "Failed acknowledging worker configuration");
+        }
+    }
+
+
+    void start_listening_loop()
+    {
         // Create a list to store all active CallData objects.
         // We can go through the list regularly to collect timed-out calls that
         // never return from completion queue
@@ -361,7 +453,6 @@ public:
         // The constructor will open the worker up for incoming calls.
         call_list.emplace_back(m_service, *m_cq);
 
-        std::cout << "Start listening on " + addr + "\n" << std::flush;
 
 
         // Loop waiting on the completion queue.
@@ -438,12 +529,6 @@ public:
         }
     }
 
-    void wait()
-    {
-        m_listening_thread.join();
-    }
-
-private:
     masterworker::WorkerService::AsyncService m_service;
 
     std::unique_ptr<grpc::Server> m_server;
@@ -489,6 +574,7 @@ public:
     }
 
 private:
+
     /* NOW you can add below, data members and member functions as per the need of your implementation*/
     std::string m_address;
     FaultHandlerSetter m_fault_handler_setter; // Hack...
