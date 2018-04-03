@@ -33,8 +33,21 @@ message TaskAck
 	bool success = 2;
 }
 
+message Ack
+{
+    bool success = 1;
+}
+
+message WorkerConfig
+{
+    string output_dir = 1;
+    uint32 num_output_files = 2;
+    uint32 worker_uid = 3;
+}
+
 
 service WorkerService
 {
 	rpc DispatchTaskToWorker (TaskRequest) returns (TaskAck) {}
+    rpc SetConfig (WorkerConfig) returns (Ack) {}
 }

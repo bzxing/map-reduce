@@ -280,9 +280,6 @@ private:
             unsigned length = shard.length();
         }
 
-
-
-
         return true;
     }
 

@@ -12,6 +12,7 @@
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
 #include <boost/range/iterator_range.hpp>
+#include <boost/filesystem.hpp>
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
@@ -26,17 +27,20 @@
 
 #include "my_utils.h"
 
-using ScopedLock = std::unique_lock<std::mutex>;
-
-constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
-
-constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
-
-constexpr unsigned kTaskMaxNumAttempts = 5;
 
 
+// I know it's a header file and unnamed namespace does nothing...But I'm too lazy :P
 namespace
 {
+    using ScopedLock = std::unique_lock<std::mutex>;
+
+    constexpr auto kClockType = GPR_CLOCK_MONOTONIC;
+
+    constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
+    constexpr gpr_timespec kWorkerConfigTimeout = make_milliseconds(5'000, kClockType);
+
+    constexpr unsigned kTaskMaxNumAttempts = 5;
+
     // File-scope pointer to Spec due to laziness. Sorry..
     // It should be set during the scope of Master::run()
     const MapReduceSpec * g_master_run_spec = nullptr;
@@ -254,8 +258,8 @@ private:
 //  - Clean up request sent to worker but not delivered
 class WorkerPoolManager
 {
-    using Reply = masterworker::TaskAck;
-    using Responder = grpc::ClientAsyncResponseReader<Reply>;
+    using TaskAck = masterworker::TaskAck;
+    using TaskAckResponder = grpc::ClientAsyncResponseReader<TaskAck>;
     using NextStatus = grpc::CompletionQueue::NextStatus;
 
     //// Begin class CallData ////
@@ -311,7 +315,7 @@ class WorkerPoolManager
             return success;
         }
 
-        const Reply & get_reply() const
+        const TaskAck & get_reply() const
         {
             return m_reply;
         }
@@ -327,9 +331,9 @@ class WorkerPoolManager
 
         grpc::ClientContext m_context;
         grpc::CompletionQueue m_cq;
-        std::unique_ptr<Responder> m_responder;
+        std::unique_ptr<TaskAckResponder> m_responder;
 
-        Reply m_reply;
+        TaskAck m_reply;
         grpc::Status m_status;
     };
     // End class CallData ////
@@ -338,14 +342,15 @@ class WorkerPoolManager
     class WorkerManager
     {
     public:
-        WorkerManager(const std::string & address) :
-              m_address(address)
+        WorkerManager(const MapReduceSpec & spec, unsigned worker_uid) :
+              m_address( spec.get_worker(worker_uid) )
+            , m_worker_uid( worker_uid )
         {
-            start();
+            start(spec);
 
             std::cout <<
-                "Worker \"" + address + "\" Started! Channel State: "
-                + std::to_string((long) m_outgoing_channel->GetState(false)) + "\n" << std::flush;
+                "Worker \"" + m_address + "\" Started! Channel State: "
+                + std::to_string((long) m_channel->GetState(false)) + "\n" << std::flush;
         }
 
         bool try_assign_task(Task * const new_task)
@@ -386,34 +391,15 @@ class WorkerPoolManager
             m_listen_for_completion_thread.join();
         }
 
-        bool connection_is_available() const
-        {
-            grpc_connectivity_state state = m_outgoing_channel->GetState(false);
-
-            switch (state)
-            {
-            case GRPC_CHANNEL_SHUTDOWN:
-                return false;
-            default:
-                return true;
-            }
-            return true;
-        }
-
     private:
 
         bool try_contact_worker_for_assigning_task(const Task * const new_task)
         {
-            BOOST_ASSERT(m_outgoing_channel);
-            BOOST_ASSERT(m_outgoing_stub);
+            BOOST_ASSERT(m_channel);
+            BOOST_ASSERT(m_stub);
 
             BOOST_ASSERT(new_task);
 
-            // If channel is unavailable, reject it
-            if (!connection_is_available())
-            {
-                return false;
-            }
 
             //// Begin Critical Section ////
             {
@@ -428,7 +414,7 @@ class WorkerPoolManager
                     }
 
                     // Try farm out the task to worker. Constructor will make the call
-                    m_call_data = std::make_unique<CallData>(new_task, *m_outgoing_stub);
+                    m_call_data = std::make_unique<CallData>(new_task, *m_stub);
                     m_call_data_cv.notify_one();
 
                     return true;
@@ -443,14 +429,64 @@ class WorkerPoolManager
             //// End Critical Section ////
         }
 
-        void start()
+        void start(const MapReduceSpec & spec)
         {
-            m_outgoing_channel = grpc::CreateChannel(m_address, grpc::InsecureChannelCredentials());
-            BOOST_ASSERT(m_outgoing_channel);
-            m_outgoing_stub = masterworker::WorkerService::NewStub(m_outgoing_channel);
-            BOOST_ASSERT(m_outgoing_stub);
+            // Bring up the connection
+            m_channel = grpc::CreateChannel(m_address, grpc::InsecureChannelCredentials());
+            BOOST_ASSERT(m_channel);
+            m_stub = masterworker::WorkerService::NewStub(m_channel);
+            BOOST_ASSERT(m_stub);
 
+            // Set config
+            bool config_success = set_worker_config(spec);
+            BOOST_ASSERT_MSG(config_success, ("Could not configure worker " + m_address).c_str());
+
+            // Kick off thread that listens for completion
             start_listening_for_completion();
+        }
+
+        masterworker::WorkerConfig generate_worker_config(const MapReduceSpec & spec)
+        {
+            masterworker::WorkerConfig config;
+
+            config.set_output_dir( spec.get_output_dir() );
+            config.set_num_output_files( spec.get_num_output_files() );
+            config.set_worker_uid( m_worker_uid );
+
+            return config;
+        }
+
+        bool set_worker_config(const MapReduceSpec & spec)
+        {
+            using Ack = masterworker::Ack;
+
+            grpc::ClientContext context;
+            grpc::CompletionQueue cq;
+            Ack reply;
+            grpc::Status status;
+
+            auto responder = m_stub->PrepareAsyncSetConfig
+                (&context, generate_worker_config(spec), &cq);
+
+            responder->StartCall();
+            responder->Finish(&reply, &status, this);
+
+            gpr_timespec deadline = gpr_now(kClockType) + kWorkerConfigTimeout;
+            void * tag = nullptr;
+            bool ok = false;
+            NextStatus next_status = cq.AsyncNext(&tag, &ok, deadline);
+
+            if ( next_status == NextStatus::GOT_EVENT && ok )
+            {
+                BOOST_ASSERT(this == tag);
+
+                if ( status.ok() && reply.success() )
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         void start_listening_for_completion()
@@ -506,10 +542,11 @@ class WorkerPoolManager
 
         // Server address, defined at construction time
         const std::string & m_address;
+        const unsigned m_worker_uid = std::numeric_limits<unsigned>::max();
 
         // Outgoing connection session data used to assign task to worker and get acknowledgment
-        std::shared_ptr<grpc::Channel> m_outgoing_channel;
-        std::unique_ptr<masterworker::WorkerService::Stub> m_outgoing_stub;
+        std::shared_ptr<grpc::Channel> m_channel;
+        std::unique_ptr<masterworker::WorkerService::Stub> m_stub;
 
         // Pointer to current call to the worker
         // Also used to atomically indicate whether worker is busy or not, to
@@ -521,12 +558,6 @@ class WorkerPoolManager
     };
     // End class WorkerManager //
 
-    static std::unique_ptr<WorkerManager> build_worker_manager(const std::string & address)
-    {
-        auto worker_info = std::make_unique<WorkerManager>(address);
-        return worker_info;
-    }
-
 public:
 
     WorkerPoolManager(const MapReduceSpec & spec)
@@ -535,7 +566,7 @@ public:
         m_workers.resize(num_workers);
         for (unsigned i = 0; i < num_workers; ++i)
         {
-            m_workers[i] = build_worker_manager( spec.get_worker(i) );
+            m_workers[i] = std::make_unique<WorkerManager>(spec, i);
         }
     }
 
@@ -591,6 +622,8 @@ public:
     {
         g_master_run_spec = &m_spec;
 
+        initialize_output_directory();
+
         WorkerPoolManager worker_pool(m_spec);
 
         // Just a mock, try farm out one task
@@ -624,7 +657,43 @@ public:
     }
 
 private:
-    /* NOW you can add below, data members and member functions as per the need of your implementation*/
+    void initialize_output_directory() const
+    {
+        const auto & output_dir = m_spec.get_output_dir();
+
+        BOOST_ASSERT_MSG(
+              !boost::filesystem::equivalent(
+                  boost::filesystem::current_path()
+                , output_dir
+              )
+            , "Target output directory can't be the same as current path!"
+        );
+
+        std::cout << "Will recursively erase directory: \"" + output_dir + "\". Are you sure?\n" << std::flush;
+        std::cout << "Type the entire directory name to continue:\n" << std::flush;
+        std::string key_input;
+        for (;;)
+        {
+            std::getline(std::cin, key_input);
+            if (key_input == output_dir)
+            {
+                std::cout << "Yes my lord. Proceeding...\n" << std::flush;
+                break;
+            }
+            else
+            {
+                std::cout << "You only get one chance. Bye.\n" << std::flush;
+                exit(EXIT_FAILURE);
+            }
+        }
+
+
+        boost::filesystem::remove_all(output_dir);
+
+        bool success = boost::filesystem::create_directory(output_dir);
+
+        BOOST_ASSERT_MSG(success, "Failed creating output directory. Did you forget to delete it first??");
+    }
 
     const MapReduceSpec & m_spec;
     const std::vector<FileShard> & m_shards;

@@ -127,6 +127,16 @@ public:
         return boost::numeric_cast<unsigned>(m_workers.size());
     }
 
+    unsigned get_num_output_files() const
+    {
+        return m_output_files;
+    }
+
+    const std::string & get_output_dir() const
+    {
+        return m_output_dir;
+    }
+
     const std::string & get_worker(unsigned i) const
     {
         BOOST_ASSERT(i < m_workers.size());
