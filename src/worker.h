@@ -35,6 +35,84 @@ constexpr gpr_timespec kSendReplyTimeout = make_milliseconds(15'000, kClockType)
 constexpr gpr_timespec kServerCqTimeout = make_milliseconds(500, kClockType);
 constexpr unsigned kCallListGarbageCollectInterval = 16;
 
+template <class Func>
+inline std::pair<bool, unsigned>
+read_lines_in_file_subrange(
+      std::ifstream & ifs
+    , const unsigned offset
+    , const unsigned length
+    , Func do_line // must accept a mutable rvalue reference to a std::string
+    )
+{
+    unsigned num_lines_read = 0;
+    bool success = true;
+
+    if (success)
+    {
+        success = (length > 0);
+    }
+
+    // Range check by trying to read from offset+length-1 (last char of shard)
+    std::ifstream::int_type c = 0;
+    if (success)
+    {
+        ifs.clear();
+        ifs.seekg( offset + length - 1 );
+        c = ifs.get();
+        success = (ifs.good());
+    }
+
+    // We just successfully read the last character in fileshard
+    // Check whether it is a newline. Skip the check if end of shard is also EOF.
+    if (success)
+    {
+        // Test whether is EOF
+        std::ifstream::int_type cc = ifs.get();
+        if ( !ifs.eof() )
+        {
+            success = (ifs.good()) && (c == '\n');
+        }
+
+        ifs.seekg( 0 );
+        ifs.clear();
+    }
+
+    // Check offset-1 is newline character.
+    // Skip this check if offset is 0
+    if (success)
+    {
+        if (offset > 0)
+        {
+            ifs.seekg( offset - 1 );
+            c = ifs.get();
+            success = (ifs.good()) && (c == '\n');
+        }
+    }
+
+    if (success)
+    {
+        ifs.seekg( offset );
+
+        std::string my_line;
+        while ( (ifs.tellg() < offset + length) && success )
+        {
+            std::getline(ifs, my_line);
+
+            if (!ifs.good())
+            {
+                success = false; // Must stop before we wanted to. Mark as fail also stop the loop.
+            }
+            else
+            {
+                do_line(std::move(my_line));
+                ++num_lines_read;
+            }
+        }
+    }
+
+    return std::make_pair(success, num_lines_read);
+}
+
 class WorkerConfig
 {
     struct PrivateCtorKey {};
@@ -317,6 +395,17 @@ private:
             const std::string & filename = shard.filename();
             unsigned offset = shard.offset();
             unsigned length = shard.length();
+
+            std::ifstream ifs(filename);
+
+            bool success = false;
+            unsigned num_lines_read = 0;
+            std::tie(success, num_lines_read) = read_lines_in_file_subrange(ifs, offset, length,
+                [](std::string && line)
+                {
+                    std::cout << line + "\n" << std::flush;
+                }
+            );
         }
 
         return true;
