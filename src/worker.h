@@ -14,6 +14,7 @@
 
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
+#include <boost/filesystem.hpp>
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
@@ -39,31 +40,44 @@ class WorkerConfig
     struct PrivateCtorKey {};
 
 public:
-    static void install_config( std::string && output_dir, unsigned num_output_files )
+    static void install_config( masterworker::WorkerConfig && config )
     {
-        BOOST_ASSERT(!s_inst);
+        BOOST_ASSERT_MSG(!s_inst, "Not designed to install worker configuration twice!");
         s_inst = std::make_unique<WorkerConfig>(
-            PrivateCtorKey(), std::move(output_dir), num_output_files );
+              PrivateCtorKey()
+            , std::move( *config.mutable_output_dir() )
+            , config.num_output_files()
+            , config.worker_uid()
+        );
         std::cout << "Configuration success!\n" << std::flush;
 
     }
 
-    static const WorkerConfig * get_config()
+    static const WorkerConfig * get_inst()
     {
         return s_inst.get();
     }
 
-    WorkerConfig( const PrivateCtorKey &, std::string && output_dir, unsigned num_output_files ) :
+    WorkerConfig(
+          const PrivateCtorKey &
+        , std::string && output_dir
+        , unsigned num_output_files
+        , unsigned worker_uid
+    ) :
           m_output_dir( std::move(output_dir) )
         , m_num_output_files( num_output_files )
+        , m_worker_uid( worker_uid )
     {
 
     }
 
-private:
-
+    // Outside code only have read only access
+    // so making this public isn't a concern
     std::string m_output_dir;
     unsigned m_num_output_files = 0;
+    unsigned m_worker_uid = 0;
+
+private:
 
     static std::unique_ptr<WorkerConfig> s_inst;
 };
@@ -297,10 +311,6 @@ private:
             return false;
         }
 
-        // Open output file
-        std::ofstream ofs( request.output_file(), std::ios::app );
-        ofs << std::to_string(task_uuid) + "\n" << std::flush;
-
         // Read each record in the input shard, and write to output file
         for (const auto & shard : request.input_file())
         {
@@ -327,9 +337,6 @@ private:
             std::cout << "Task " + std::to_string(task_uuid) + " failed due to unregistered reducer!\n" << std::flush;
             return false;
         }
-
-        std::ofstream ofs( request.output_file(), std::ios::app );
-        ofs << std::to_string(task_uuid) + "\n" << std::flush;
 
         for (const auto & shard : request.input_file())
         {
@@ -377,6 +384,7 @@ public:
 
         std::cout << "Waiting for configuration on " + addr + "\n" << std::flush;
         wait_for_config();
+        setup_work_directory();
 
         std::cout << "Start accepting tasks on " + addr + "\n" << std::flush;
         m_listening_thread = std::thread([&]() { start_listening_loop(); });
@@ -417,10 +425,7 @@ private:
 
         // Install the configuration!
         {
-            WorkerConfig::install_config(
-                  std::move( *config.mutable_output_dir() )
-                , config.num_output_files()
-            );
+            WorkerConfig::install_config( std::move(config) );
         }
 
         // Return the call
@@ -439,6 +444,22 @@ private:
 
             BOOST_ASSERT_MSG(success && ok && tag == this, "Failed acknowledging worker configuration");
         }
+    }
+
+    void setup_work_directory() const
+    {
+        const auto * config = WorkerConfig::get_inst();
+        BOOST_ASSERT(config);
+
+        boost::filesystem::path work_dir = config->m_output_dir;
+        work_dir /= std::to_string( config->m_worker_uid );
+
+        bool success = boost::filesystem::create_directory(work_dir);
+        BOOST_ASSERT(success);
+
+        std::stringstream oss;
+        oss << "Created working directory \"" << work_dir << "\"!\n";
+        std::cout << oss.str() << std::flush;
     }
 
 

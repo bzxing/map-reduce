@@ -42,17 +42,6 @@ constexpr unsigned kTaskMaxNumAttempts = 5;
 const MapReduceSpec * g_master_run_spec = nullptr;
 
 
-
-
-struct PrivateTaskGeneratorKey
-{
-private:
-    friend class TaskGenerator;
-    PrivateTaskGeneratorKey() {};
-};
-
-
-
 class Task
 {
 public:
@@ -141,9 +130,7 @@ class MapTask : public Task
 {
 public:
 
-    // Can only be called by holder of PrivateTaskGeneratorKey
     MapTask(
-
           const FileShard & input_shard
         , std::string output_file
         )
@@ -194,9 +181,7 @@ class ReduceTask : public Task
 {
 public:
 
-    // Can only be called by holder of PrivateTaskGeneratorKey
     ReduceTask(
-
           std::string input_file_1
         , std::string input_file_2
         , std::string output_file
@@ -665,26 +650,28 @@ private:
             , "Target output directory can't be the same as current path!"
         );
 
-        std::cout << "Will recursively erase directory: \"" + output_dir + "\". Are you sure?\n" << std::flush;
-        std::cout << "Type the entire directory name to continue:\n" << std::flush;
-        std::string key_input;
-        for (;;)
+        if (boost::filesystem::exists(output_dir))
         {
-            std::getline(std::cin, key_input);
-            if (key_input == output_dir)
+            std::cout << "Warning: Will erase existing location: \"" + output_dir + "\" to make room for output directory.\nAre you really sure?\n" << std::flush;
+            std::cout << "To proceed, type the target location to erase:\n" << std::flush;
+            std::string key_input;
+            for (;;)
             {
-                std::cout << "Yes my lord. Proceeding...\n" << std::flush;
-                break;
+                std::getline(std::cin, key_input);
+                if (key_input == output_dir)
+                {
+                    std::cout << "Yes my lord. Proceeding...\n" << std::flush;
+                    break;
+                }
+                else
+                {
+                    std::cout << "You only get one chance. Bye.\n" << std::flush;
+                    exit(EXIT_FAILURE);
+                }
             }
-            else
-            {
-                std::cout << "You only get one chance. Bye.\n" << std::flush;
-                exit(EXIT_FAILURE);
-            }
+
+            boost::filesystem::remove_all(output_dir);
         }
-
-
-        boost::filesystem::remove_all(output_dir);
 
         bool success = boost::filesystem::create_directory(output_dir);
 
