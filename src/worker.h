@@ -52,6 +52,8 @@ read_lines_in_file_subrange(
         success = (length > 0);
     }
 
+    BOOST_ASSERT(success);
+
     // Range check by trying to read from offset+length-1 (last char of shard)
     std::ifstream::int_type c = 0;
     if (success)
@@ -61,6 +63,7 @@ read_lines_in_file_subrange(
         c = ifs.get();
         success = (ifs.good());
     }
+    BOOST_ASSERT(success);
 
     // We just successfully read the last character in fileshard
     // Check whether it is a newline. Skip the check if end of shard is also EOF.
@@ -76,6 +79,7 @@ read_lines_in_file_subrange(
         ifs.seekg( 0 );
         ifs.clear();
     }
+    BOOST_ASSERT(success);
 
     // Check offset-1 is newline character.
     // Skip this check if offset is 0
@@ -88,27 +92,30 @@ read_lines_in_file_subrange(
             success = (ifs.good()) && (c == '\n');
         }
     }
+    BOOST_ASSERT(success);
+
 
     if (success)
     {
         ifs.seekg( offset );
 
         std::string my_line;
-        while ( (ifs.tellg() < offset + length) && success )
+        while ( (ifs.tellg() < offset + length) && ifs )
         {
+            my_line.clear();
+
             std::getline(ifs, my_line);
 
-            if (!ifs.good())
-            {
-                success = false; // Must stop before we wanted to. Mark as fail also stop the loop.
-            }
-            else
+            if (!my_line.empty())
             {
                 do_line(std::move(my_line));
                 ++num_lines_read;
             }
         }
+
+        success = (ifs.tellg() >= offset + length) || ifs.eof();
     }
+    BOOST_ASSERT(success);
 
     return std::make_pair(success, num_lines_read);
 }
@@ -396,6 +403,8 @@ private:
             unsigned offset = shard.offset();
             unsigned length = shard.length();
 
+            // std::cout << filename + " " + std::to_string(offset) + " " + std::to_string(length) + "\n" << std::flush;
+
             std::ifstream ifs(filename);
 
             bool success = false;
@@ -403,9 +412,11 @@ private:
             std::tie(success, num_lines_read) = read_lines_in_file_subrange(ifs, offset, length,
                 [](std::string && line)
                 {
-                    std::cout << line + "\n" << std::flush;
+                    //std::cout << line + "\n" << std::flush;
                 }
             );
+
+            BOOST_ASSERT_MSG(success, "Map task failed at reading file");
         }
 
         return true;

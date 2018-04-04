@@ -35,7 +35,7 @@
 constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
 constexpr gpr_timespec kWorkerConfigTimeout = make_milliseconds(5'000, kClockType);
 
-constexpr unsigned kTaskMaxNumAttempts = 5;
+constexpr unsigned kTaskMaxNumAttempts = 50; // Hehe
 
 // File-scope pointer to Spec due to laziness. Sorry..
 // It should be set during the scope of Master::run()
@@ -52,6 +52,23 @@ public:
         kCompleted,
         kFailedUnrecoverable
     };
+
+    bool should_wait() const
+    {
+        switch (m_state)
+        {
+        case TaskState::kReady:
+        case TaskState::kExecuting:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    bool should_assign() const
+    {
+        return m_state == TaskState::kReady;
+    }
 
     Task() :
         m_uid( s_task_uid.fetch_and_increment() )
@@ -109,6 +126,11 @@ public:
         return m_state;
     }
 
+    unsigned get_failure_count() const
+    {
+        return m_failure_counter;
+    }
+
 private:
     bool try_change_state(TaskState prev_state, TaskState next_state)
     {
@@ -142,6 +164,8 @@ public:
     // Non-copyable because UID
     MapTask(const MapTask &) = delete;
     MapTask & operator=(const MapTask &) = delete;
+    MapTask(MapTask &&) = default;
+    MapTask & operator=(MapTask &&) = default;
 
     virtual TaskType get_task_type() const override
     {
@@ -195,6 +219,8 @@ public:
     // Non-copyable because UID
     ReduceTask(const ReduceTask &) = delete;
     ReduceTask & operator=(const ReduceTask &) = delete;
+    ReduceTask(ReduceTask &&) = default;
+    ReduceTask & operator=(ReduceTask &&) = default;
 
     virtual TaskType get_task_type() const override
     {
@@ -330,13 +356,14 @@ class WorkerPoolManager
             start(spec);
 
             std::cout <<
-                "Worker \"" + m_address + "\" Started! Channel State: "
+                "Worker " + std::to_string(m_worker_uid) + " \"" + m_address + "\" Started! Channel State: "
                 + std::to_string((long) m_channel->GetState(false)) + "\n" << std::flush;
         }
 
         bool try_assign_task(Task * const new_task)
         {
             BOOST_ASSERT(new_task);
+            const unsigned task_failure_count = new_task->get_failure_count();
 
             bool success = true;
 
@@ -360,7 +387,9 @@ class WorkerPoolManager
             }
             else
             {
-                std::cout << "Task " + std::to_string(new_task->get_id()) + " Assigned!\n" << std::flush;
+                std::cout << "Task " + std::to_string(new_task->get_id())
+                + " Assigned to worker " + std::to_string(m_worker_uid)
+                + "! Failure count: " + std::to_string(task_failure_count) + "\n" << std::flush;
             }
             // Else, leave the task state as kExecuting.
 
@@ -568,6 +597,11 @@ public:
         }
     }
 
+    unsigned get_num_workers() const
+    {
+        return boost::numeric_cast<unsigned>(m_workers.size());
+    }
+
 private:
     std::vector<std::unique_ptr<WorkerManager>> m_workers;
 };
@@ -611,22 +645,87 @@ public:
 
         constexpr unsigned kMaxTask = 262144;
 
-        std::vector<std::unique_ptr<MapTask>> task_vec;
-        for (unsigned i = 0; i < kMaxTask; ++i)
+        // std::vector<std::unique_ptr<MapTask>> task_vec;
+        // for (unsigned i = 0; i < kMaxTask; ++i)
+        // {
+        //     task_vec.push_back( std::make_unique<MapTask>(m_shards[0], "mock_output.txt") );
+        // }
+
+        // for (;;)
+        // {
+        //     for (auto & task_ptr : task_vec)
+        //     {
+        //         if (task_ptr->get_state() == Task::TaskState::kReady)
+        //         {
+        //             worker_pool.get_worker(0)->try_assign_task( task_ptr.get() );
+        //         }
+
+        //         usleep(1000);
+        //     }
+        // }
+
+        // Infinite loop assigning tasks to worker, until everything is processed
+
+        std::vector<MapTask> task_pool;
+        task_pool.reserve(m_shards.size());
+        for (const auto & shard : m_shards)
         {
-            task_vec.push_back( std::make_unique<MapTask>(m_shards[0], "mock_output.txt") );
+            task_pool.emplace_back( shard, std::string() );
         }
 
-        for (;;)
+
+        // a very non-compliant iterator..
+        class WorkerIter
         {
-            for (auto & task_ptr : task_vec)
+        public:
+            WorkerIter(unsigned num_workers) :
+                m_num_workers(num_workers)
+            {}
+
+            unsigned operator*() const
             {
-                if (task_ptr->get_state() == Task::TaskState::kReady)
+                return m_id;
+            }
+
+            WorkerIter & operator++()
+            {
+                ++m_id;
+
+                if (m_id >= m_num_workers)
                 {
-                    worker_pool.get_worker(0)->try_assign_task( task_ptr.get() );
+                    m_id = 0;
                 }
 
-                usleep(1000);
+                return *this;
+            }
+
+        private:
+            unsigned m_id = 0;
+            unsigned m_num_workers = 1;
+        };
+
+        WorkerIter worker_iter( worker_pool.get_num_workers() );
+        for (;;)
+        {
+            // Scan through all tasks
+            unsigned num_keep_waiting = 0;
+            for ( auto & task : task_pool )
+            {
+                if (task.should_wait())
+                {
+                    ++num_keep_waiting;
+                }
+
+                if (task.should_assign())
+                {
+                    // Loop until can find an available worker to assign
+                    while ( !worker_pool.get_worker(*++worker_iter)->try_assign_task(&task) );
+                }
+            }
+
+            if (num_keep_waiting == 0)
+            {
+                break;
             }
         }
 
