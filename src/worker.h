@@ -52,8 +52,6 @@ for_each_line_in_file_subrange(
         success = (length > 0);
     }
 
-    BOOST_ASSERT(success);
-
     // Range check by trying to read from offset+length-1 (last char of shard)
     std::ifstream::int_type c = 0;
     if (success)
@@ -63,7 +61,6 @@ for_each_line_in_file_subrange(
         c = ifs.get();
         success = (ifs.good());
     }
-    BOOST_ASSERT(success);
 
     // We just successfully read the last character in fileshard
     // Check whether it is a newline. Skip the check if end of shard is also EOF.
@@ -79,7 +76,6 @@ for_each_line_in_file_subrange(
         ifs.seekg( 0 );
         ifs.clear();
     }
-    BOOST_ASSERT(success);
 
     // Check offset-1 is newline character.
     // Skip this check if offset is 0
@@ -92,8 +88,6 @@ for_each_line_in_file_subrange(
             success = (ifs.good()) && (c == '\n');
         }
     }
-    BOOST_ASSERT(success);
-
 
     if (success)
     {
@@ -115,58 +109,9 @@ for_each_line_in_file_subrange(
 
         success = (ifs.tellg() >= offset + length) || ifs.eof();
     }
-    BOOST_ASSERT(success);
 
     return std::make_pair(success, num_lines_read);
 }
-
-class WorkerConfig
-{
-    struct PrivateCtorKey {};
-
-public:
-    static void install_config( masterworker::WorkerConfig && config )
-    {
-        BOOST_ASSERT_MSG(!s_inst, "Not designed to install worker configuration twice!");
-        s_inst = std::make_unique<WorkerConfig>(
-              PrivateCtorKey()
-            , std::move( *config.mutable_output_dir() )
-            , config.num_output_files()
-            , config.worker_uid()
-        );
-        std::cout << "Configuration success!\n" << std::flush;
-
-    }
-
-    static const WorkerConfig * get_inst()
-    {
-        return s_inst.get();
-    }
-
-    WorkerConfig(
-          const PrivateCtorKey &
-        , std::string && output_dir
-        , unsigned num_output_files
-        , unsigned worker_uid
-    ) :
-          m_output_dir( std::move(output_dir) )
-        , m_num_output_files( num_output_files )
-        , m_worker_uid( worker_uid )
-    {
-
-    }
-
-    // Outside code only have read only access
-    // so making this public isn't a concern
-    std::string m_output_dir;
-    unsigned m_num_output_files = 0;
-    unsigned m_worker_uid = 0;
-
-private:
-
-    static std::unique_ptr<WorkerConfig> s_inst;
-};
-
 
 
 class CallData
@@ -354,8 +299,8 @@ private:
     {
         BOOST_ASSERT(call);
 
-        // Mock
-        std::this_thread::sleep_for(std::chrono::seconds(1));
+        // Artificially slow things down
+        // std::this_thread::sleep_for(std::chrono::seconds(1));
 
         const auto & request = call->get_request();
         TaskType task_type = request.task_type();
@@ -409,13 +354,16 @@ private:
             bool success = false;
             unsigned num_lines_read = 0;
             std::tie(success, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
-                [](std::string && line)
+                [&](const std::string & line)
                 {
-
+                    mapper_ptr->map(line);
                 }
             );
 
-            BOOST_ASSERT_MSG(success, "Map task failed at reading file");
+            if (!success)
+            {
+                return false;
+            }
         }
 
         return true;
@@ -442,6 +390,23 @@ private:
             const std::string & filename = shard.filename();
             unsigned offset = shard.offset();
             unsigned length = shard.length();
+
+
+            std::ifstream ifs(filename);
+
+            bool success = false;
+            unsigned num_lines_read = 0;
+            std::tie(success, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
+                [&](const std::string & line)
+                {
+                    reducer_ptr->reduce(std::string(), std::vector<std::string>());
+                }
+            );
+
+            if (!success)
+            {
+                return false;
+            }
         }
 
         return true;
@@ -550,15 +515,10 @@ private:
         const auto * config = WorkerConfig::get_inst();
         BOOST_ASSERT(config);
 
-        boost::filesystem::path work_dir = config->m_output_dir;
-        work_dir /= std::to_string( config->m_worker_uid );
+        const auto & work_dir = config->m_output_dir;
 
-        bool success = boost::filesystem::create_directory(work_dir);
-        BOOST_ASSERT(success);
-
-        std::stringstream oss;
-        oss << "Created working directory \"" << work_dir << "\"!\n";
-        std::cout << oss.str() << std::flush;
+        bool success = boost::filesystem::is_directory(work_dir);
+        BOOST_ASSERT_MSG(success, (work_dir + "does not exist!").c_str());
     }
 
 

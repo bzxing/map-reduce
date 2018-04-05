@@ -767,7 +767,7 @@ private:
 
         bool success = boost::filesystem::create_directory(output_dir);
 
-        BOOST_ASSERT_MSG(success, "Failed creating output directory. Did you forget to delete it first??");
+        BOOST_ASSERT_MSG(success, "Failed creating output directory.");
     }
 
     const MapReduceSpec & m_spec;

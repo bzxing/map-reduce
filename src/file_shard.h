@@ -84,7 +84,7 @@ inline unsigned determine_shard_length_simple(
 inline unsigned determine_shard_length(
 	  std::ifstream & ifs
 	, const unsigned file_length
-	, const unsigned prelim_offset
+	, const unsigned prev_offset
 	, const unsigned target_shard_length
 	, const unsigned remaining_file_length
 	)
@@ -98,7 +98,7 @@ inline unsigned determine_shard_length(
 
 	// Check if it's right at a newline or EOF character.
 	// If not, advance to the next newline or EOF character.
-	unsigned next_offset = (prelim_offset + target_shard_length);
+	unsigned next_offset = (prev_offset + target_shard_length);
 
 	// If next shard starts from 0, use the prelim.
 	// (This should not happen, but we should be tolerant.)
@@ -136,10 +136,10 @@ inline unsigned determine_shard_length(
 	BOOST_ASSERT(ifs.good());
 
 	unsigned adjusted_offset = boost::numeric_cast<unsigned>(static_cast<long>(ifs.tellg()));
-	BOOST_ASSERT(adjusted_offset > prelim_shard_length);
+	BOOST_ASSERT(adjusted_offset > next_offset);
 	BOOST_ASSERT(adjusted_offset <= file_length);
 
-	return adjusted_offset - prelim_offset;
+	return adjusted_offset - prev_offset;
 }
 
 inline std::vector<FileShard> make_file_shards(const MapReduceSpec & mr_spec)
