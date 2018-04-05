@@ -3,6 +3,39 @@
 #include <string>
 #include <iostream>
 
+#include <memory>
+#include <utility>
+
+#include <boost/assert.hpp>
+
+class TaskEnv
+{
+public:
+
+	template <class ...Args>
+	static const TaskEnv * create_inst(Args &&... args)
+	{
+		BOOST_ASSERT(!s_inst);
+		s_inst = std::make_unique<TaskEnv>( std::forward<Args>(args)... );
+		return s_inst.get();
+	}
+
+	static const TaskEnv * get_inst()
+	{
+		return s_inst.get();
+	}
+
+private:
+
+	TaskEnv()
+	{
+
+	}
+
+	static std::unique_ptr<TaskEnv> s_inst;
+
+};
+
 /* CS6210_TASK Implement this data structureas per your implementation.
 		You will need this when your worker is running the map task*/
 struct BaseMapperInternal
@@ -50,6 +83,9 @@ struct BaseReducerInternal
 
 	/* NOW you can add below, data members and member functions as per the need of your implementation*/
 };
+
+
+
 
 
 

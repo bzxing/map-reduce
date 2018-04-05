@@ -37,7 +37,7 @@ constexpr unsigned kCallListGarbageCollectInterval = 16;
 
 template <class Func>
 inline std::pair<bool, unsigned>
-read_lines_in_file_subrange(
+for_each_line_in_file_subrange(
       std::ifstream & ifs
     , const unsigned offset
     , const unsigned length
@@ -167,7 +167,7 @@ private:
     static std::unique_ptr<WorkerConfig> s_inst;
 };
 
-std::unique_ptr<WorkerConfig> WorkerConfig::s_inst;
+
 
 class CallData
 {
@@ -403,16 +403,15 @@ private:
             unsigned offset = shard.offset();
             unsigned length = shard.length();
 
-            // std::cout << filename + " " + std::to_string(offset) + " " + std::to_string(length) + "\n" << std::flush;
 
             std::ifstream ifs(filename);
 
             bool success = false;
             unsigned num_lines_read = 0;
-            std::tie(success, num_lines_read) = read_lines_in_file_subrange(ifs, offset, length,
+            std::tie(success, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
                 [](std::string && line)
                 {
-                    //std::cout << line + "\n" << std::flush;
+
                 }
             );
 

@@ -39,8 +39,8 @@ constexpr unsigned kTaskMaxNumAttempts = 50; // Hehe
 
 // File-scope pointer to Spec due to laziness. Sorry..
 // It should be set during the scope of Master::run()
-const MapReduceSpec * g_master_run_spec = nullptr;
 
+extern const MapReduceSpec * g_master_run_spec;
 
 class Task
 {
@@ -145,7 +145,7 @@ private:
     static tbb::atomic<unsigned> s_task_uid;
 };
 
-tbb::atomic<unsigned> Task::s_task_uid = 0;
+
 
 //// Begin class MapTask ////
 class MapTask : public Task
@@ -728,6 +728,8 @@ public:
                 break;
             }
         }
+
+        std::cout << "All tasks completed!\n" << std::flush;
 
 
         worker_pool.wait();
