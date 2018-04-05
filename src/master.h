@@ -396,6 +396,11 @@ class WorkerPoolManager
             return success;
         }
 
+        static void signal_termination()
+        {
+            s_terminate_worker_listening_thread = true;
+        }
+
         void wait()
         {
             m_listen_for_completion_thread.join();
@@ -511,7 +516,7 @@ class WorkerPoolManager
 
             ScopedLock lock(m_call_data_mutex);
 
-            for (;;)
+            while (!s_terminate_worker_listening_thread)
             {
                 // Block until a new m_call_data is present.
                 while (!m_call_data)
@@ -565,6 +570,8 @@ class WorkerPoolManager
         std::unique_ptr<CallData> m_call_data;
 
         std::thread m_listen_for_completion_thread;
+
+        static tbb::atomic<bool> s_terminate_worker_listening_thread;
     };
     // End class WorkerManager //
 
@@ -595,6 +602,11 @@ public:
         {
             worker_mgr_ptr->wait();
         }
+    }
+
+    static void signal_termination()
+    {
+        WorkerManager::signal_termination();
     }
 
     unsigned get_num_workers() const
@@ -644,27 +656,6 @@ public:
         // Just a mock, try farm out one task
 
         constexpr unsigned kMaxTask = 262144;
-
-        // std::vector<std::unique_ptr<MapTask>> task_vec;
-        // for (unsigned i = 0; i < kMaxTask; ++i)
-        // {
-        //     task_vec.push_back( std::make_unique<MapTask>(m_shards[0], "mock_output.txt") );
-        // }
-
-        // for (;;)
-        // {
-        //     for (auto & task_ptr : task_vec)
-        //     {
-        //         if (task_ptr->get_state() == Task::TaskState::kReady)
-        //         {
-        //             worker_pool.get_worker(0)->try_assign_task( task_ptr.get() );
-        //         }
-
-        //         usleep(1000);
-        //     }
-        // }
-
-        // Infinite loop assigning tasks to worker, until everything is processed
 
         std::vector<MapTask> task_pool;
         task_pool.reserve(m_shards.size());
@@ -730,7 +721,7 @@ public:
         }
 
         std::cout << "All tasks completed!\n" << std::flush;
-
+        WorkerPoolManager::signal_termination();
 
         worker_pool.wait();
 

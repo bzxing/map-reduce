@@ -27,7 +27,7 @@ struct FileShard
 
 
 
-unsigned determine_file_length(const std::string & filename)
+inline unsigned determine_file_length(const std::string & filename)
 {
 	BOOST_ASSERT_MSG(
 		boost::filesystem::is_regular_file(filename),
@@ -36,7 +36,7 @@ unsigned determine_file_length(const std::string & filename)
 			(boost::filesystem::file_size(filename));
 }
 
-void print_file_shards(std::ostream & os, const std::vector<FileShard> & shards)
+inline void print_file_shards(std::ostream & os, const std::vector<FileShard> & shards)
 {
 	std::ostringstream oss;
 	oss << "shard_id"
@@ -58,7 +58,7 @@ void print_file_shards(std::ostream & os, const std::vector<FileShard> & shards)
 	os << oss.str() << std::flush;
 }
 
-unsigned determine_shard_length_simple(
+inline unsigned determine_shard_length_simple(
 	  unsigned target_shard_length
 	, unsigned remaining_file_length
 	)
@@ -81,7 +81,7 @@ unsigned determine_shard_length_simple(
 
 // This function try to divide shards as evenly as possible, while
 // make sure the shard borders don't cut through a line.
-unsigned determine_shard_length(
+inline unsigned determine_shard_length(
 	  std::ifstream & ifs
 	, const unsigned file_length
 	, const unsigned prelim_offset
@@ -142,7 +142,7 @@ unsigned determine_shard_length(
 	return adjusted_offset - prelim_offset;
 }
 
-std::vector<FileShard> make_file_shards(const MapReduceSpec & mr_spec)
+inline std::vector<FileShard> make_file_shards(const MapReduceSpec & mr_spec)
 {
 	std::vector<FileShard> shard_vec;
 	const unsigned target_shard_length = mr_spec.get_map_kilobytes() * 1024u;
