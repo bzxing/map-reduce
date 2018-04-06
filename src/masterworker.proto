@@ -2,6 +2,21 @@ syntax = "proto3";
 
 package masterworker;
 
+enum WorkerErrorEnum
+{
+    kUnknownError = 0;
+    kGood = 1;
+    kInputFileLengthError = 2;
+    kInputFileRangeError = 3;
+    kInputFileNewlineError = 4;
+    kInputFileGetlineError = 5;
+    kTaskTypeError = 6;
+    kTaskProcessorNotFoundError = 7;
+    kWorkerBusyError = 8;
+    kReceptionError = 9;
+}
+
+
 message FileShard
 {
 	string filename = 1;
@@ -22,15 +37,14 @@ message TaskRequest
     string user_id = 2;
 	TaskType task_type = 3;
 
-	repeated FileShard input_file = 4; // length & offset are ignored for reduction
-
-	string output_file = 5;
+	repeated FileShard input_file = 4;
 }
 
 message TaskAck
 {
 	uint32 task_uid = 1;
 	bool success = 2;
+    WorkerErrorEnum error_enum = 3;
 }
 
 message Ack

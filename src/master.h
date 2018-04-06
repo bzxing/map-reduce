@@ -10,9 +10,11 @@
 
 
 #include <boost/numeric/conversion/cast.hpp>
+#include <boost/lexical_cast.hpp>
 #include <boost/assert.hpp>
 #include <boost/range/iterator_range.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/container/flat_set.hpp>
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
@@ -35,7 +37,7 @@
 constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
 constexpr gpr_timespec kWorkerConfigTimeout = make_milliseconds(5'000, kClockType);
 
-constexpr unsigned kTaskMaxNumAttempts = 50; // Hehe
+constexpr unsigned kTaskMaxNumAttempts = 3; // Hehe
 
 // File-scope pointer to Spec due to laziness. Sorry..
 // It should be set during the scope of Master::run()
@@ -92,33 +94,31 @@ public:
     {
         return try_change_state(TaskState::kReady, TaskState::kExecuting);
     }
-    bool try_unset_executing()
+    void force_unset_executing()
     {
-        return try_change_state(TaskState::kExecuting, TaskState::kReady);
+        BOOST_ASSERT(try_change_state(TaskState::kExecuting, TaskState::kReady));
     }
-    bool try_set_completed()
+    void force_set_completed()
     {
-        return try_change_state(TaskState::kExecuting, TaskState::kCompleted);
+        BOOST_ASSERT(try_change_state(TaskState::kExecuting, TaskState::kCompleted));
     }
 
-    bool report_execution_failure()
+    std::pair<unsigned, bool> force_report_execution_failure(WorkerErrorEnum e)
     {
         unsigned current_failure_count = m_failure_counter.fetch_and_increment() + 1;
         bool perm_fail = false;
 
-        bool change_state_success = false;
-        if (current_failure_count > kTaskMaxNumAttempts)
+        if (current_failure_count > kTaskMaxNumAttempts || is_permanent_error(e) )
         {
-            change_state_success = try_change_state(TaskState::kExecuting, TaskState::kFailedUnrecoverable);
+            BOOST_ASSERT(try_change_state(TaskState::kExecuting, TaskState::kFailedUnrecoverable));
             perm_fail = true;
         }
         else
         {
-            change_state_success = try_change_state(TaskState::kExecuting, TaskState::kReady);
+            BOOST_ASSERT(try_change_state(TaskState::kExecuting, TaskState::kReady));
         }
 
-        BOOST_ASSERT(change_state_success);
-        return perm_fail;
+        return std::make_pair(current_failure_count, perm_fail);
     }
 
     TaskState get_state() const
@@ -132,6 +132,23 @@ public:
     }
 
 private:
+
+    static bool is_permanent_error(WorkerErrorEnum e)
+    {
+        switch (e)
+        {
+        case WorkerErrorEnum::kInputFileLengthError:
+        case WorkerErrorEnum::kInputFileRangeError:
+        case WorkerErrorEnum::kInputFileNewlineError:
+        case WorkerErrorEnum::kInputFileGetlineError:
+        case WorkerErrorEnum::kTaskTypeError:
+        case WorkerErrorEnum::kTaskProcessorNotFoundError:
+            return true;
+        default:
+            return false;
+        }
+    }
+
     bool try_change_state(TaskState prev_state, TaskState next_state)
     {
         TaskState snapshot = m_state.compare_and_swap(next_state, prev_state);
@@ -154,11 +171,9 @@ public:
 
     MapTask(
           const FileShard & input_shard
-        , std::string output_file
         )
     :
           m_input_shard( input_shard )
-        , m_output_file( std::move(output_file) )
     {}
 
     // Non-copyable because UID
@@ -179,7 +194,6 @@ public:
         msg.set_user_id( g_master_run_spec->get_user_id() );
         msg.set_task_type( get_task_type() );
         *msg.add_input_file() = generate_file_shard_message_field( m_input_shard );
-        msg.set_output_file( m_output_file );
         return msg;
     }
 
@@ -195,7 +209,6 @@ private:
     }
 
     const FileShard & m_input_shard;
-    std::string m_output_file;
 };
 //// End class MapTask ////
 
@@ -205,15 +218,8 @@ class ReduceTask : public Task
 {
 public:
 
-    ReduceTask(
-          std::string input_file_1
-        , std::string input_file_2
-        , std::string output_file
-        )
-    :
-          m_input_file_1( std::move(input_file_1) )
-        , m_input_file_2( std::move(input_file_2) )
-        , m_output_file( std::move(output_file) )
+    ReduceTask( std::vector<std::string> && file_list )
+    : m_file_list( std::move(file_list) )
     {}
 
     // Non-copyable because UID
@@ -233,9 +239,12 @@ public:
         msg.set_task_uid( get_id() );
         msg.set_user_id( g_master_run_spec->get_user_id() );
         msg.set_task_type( get_task_type() );
-        *msg.add_input_file() = generate_file_shard_message_field( m_input_file_1 );
-        *msg.add_input_file() = generate_file_shard_message_field( m_input_file_2 );
-        msg.set_output_file( m_output_file );
+
+        for (const auto & filename : m_file_list)
+        {
+            *msg.add_input_file() = generate_file_shard_message_field(filename);
+        }
+
         return msg;
     }
 
@@ -251,9 +260,9 @@ private:
         return msg;
     }
 
-    std::string m_input_file_1;
-    std::string m_input_file_2;
-    std::string m_output_file;
+    std::vector<std::string> m_file_list;
+
+
 };
 //// End class ReduceTask ////
 
@@ -286,7 +295,7 @@ class WorkerPoolManager
             m_responder->Finish(&m_reply, &m_status, this);
         }
 
-        bool try_get_result()
+        std::pair<bool, WorkerErrorEnum> try_get_result()
         {
             gpr_timespec deadline = m_timestamp + kTaskExecutionTimeout;
 
@@ -297,29 +306,36 @@ class WorkerPoolManager
             // Will block until deadline...
             // Then we get the result (either success of fail)
 
-            bool success = false;
-
             // Check whether the m_reply is successfully received (communication level check)
             if ( next_status == NextStatus::GOT_EVENT && ok )
             {
                 BOOST_ASSERT(this == receive_tag);
 
                 // Check whether the m_reply indicates the task is accepted (logic level check)
-                if ( m_status.ok() && m_reply.success() )
+                if ( m_status.ok() )
                 {
-                    unsigned expected_uid = m_task->get_id();
-                    unsigned actual_uid = m_reply.task_uid();
-                    if (expected_uid != actual_uid)
+                    bool success = m_reply.success();
+
+                    // Good to have success. But before announcing it
+                    // we have to make sure the task UID matches
+                    if (success)
                     {
-                        std::cout << ("UID MISMATCH!!!" + std::to_string(expected_uid) + " " + std::to_string(actual_uid) + "\n") << std::flush;
+                        unsigned expected_uid = m_task->get_id();
+                        unsigned actual_uid = m_reply.task_uid();
+
+                        if (expected_uid != actual_uid)
+                        {
+                            std::cerr << ("UID MISMATCH!!!" + std::to_string(expected_uid) + " " + std::to_string(actual_uid) + "\n") << std::flush;
+                            BOOST_ASSERT(false);
+                        }
                     }
 
-                    BOOST_ASSERT(expected_uid == actual_uid);
-                    success = true;
+                    WorkerErrorEnum error_enum = m_reply.error_enum();
+                    return std::make_pair(success, error_enum);
                 }
             }
 
-            return success;
+            return std::make_pair(false, WorkerErrorEnum::kReceptionError);
         }
 
         const TaskAck & get_reply() const
@@ -363,7 +379,6 @@ class WorkerPoolManager
         bool try_assign_task(Task * const new_task)
         {
             BOOST_ASSERT(new_task);
-            const unsigned task_failure_count = new_task->get_failure_count();
 
             bool success = true;
 
@@ -381,15 +396,14 @@ class WorkerPoolManager
             // Revert the task state, if task assignment failed.
             if (!success)
             {
-                success = new_task->try_unset_executing();
-                BOOST_ASSERT(success); // Why shouldn't this step pass?
+                new_task->force_unset_executing();
                 //std::cout << "Task " + std::to_string(new_task->get_id()) + " Rejected!\n" << std::flush;
             }
             else
             {
                 std::cout << "Task " + std::to_string(new_task->get_id())
                 + " Assigned to worker " + std::to_string(m_worker_uid)
-                + "! Failure count: " + std::to_string(task_failure_count) + "\n" << std::flush;
+                + "!" + "\n" << std::flush;
             }
             // Else, leave the task state as kExecuting.
 
@@ -521,10 +535,17 @@ class WorkerPoolManager
                 // Block until a new m_call_data is present.
                 while (!m_call_data)
                 {
-                    m_call_data_cv.wait(lock);
+                    m_call_data_cv.wait_for(lock, std::chrono::milliseconds(100));
+
+                    if (s_terminate_worker_listening_thread)
+                    {
+                        return;
+                    }
                 }
 
-                bool success = m_call_data->try_get_result();
+                auto p = m_call_data->try_get_result();
+                bool success = p.first;
+                WorkerErrorEnum error_enum = p.second;
                 // The use of const_cast here is legitimate because
                 // WorkerManager created CallData with non-const pointer
                 // in the first place, and CallData class is privately defined
@@ -532,17 +553,24 @@ class WorkerPoolManager
                 Task * task = const_cast<Task *>(m_call_data->get_task());
                 BOOST_ASSERT(task);
 
+                unsigned failure_count = 0;
+                bool perm_fail = false;
                 if (success)
                 {
-                    bool change_state_success = task->try_set_completed();
-                    BOOST_ASSERT(change_state_success);
-                    std::cout << "Task " + std::to_string(task->get_id()) + " Completed!\n" << std::flush;
+                    task->force_set_completed();
                 }
                 else
                 {
-                    task->report_execution_failure();
-                    std::cout << "Task " + std::to_string(task->get_id()) + " Failed!\n" << std::flush;
+                    std::tie(failure_count, perm_fail) = task->force_report_execution_failure(error_enum);
                 }
+
+
+                std::cout <<
+                    "Task " + std::to_string(task->get_id()) + " " + (success ? "suceeded" : "failed") + "! "
+                    + "error_enum=" + worker_error_enum_to_string(error_enum) + " "
+                    + "failure_count=" + (success ? std::string("n/a") : std::to_string(failure_count)) + " "
+                    + "perm_fail=" + (perm_fail ? "true" : "false")
+                    + "\n" << std::flush;
 
                 // Can release m_call_data now.
                 m_call_data = nullptr;
@@ -618,13 +646,8 @@ private:
     std::vector<std::unique_ptr<WorkerManager>> m_workers;
 };
 
-class TaskAllocator
-{
-public:
 
-private:
 
-};
 
 /* CS6210_TASK: Handle all the bookkeeping that Master is supposed to do.
     This is probably the biggest task for this project, will test your understanding of map reduce */
@@ -651,20 +674,87 @@ public:
 
         initialize_output_directory();
 
-        WorkerPoolManager worker_pool(m_spec);
+        m_worker_pool = std::make_unique<WorkerPoolManager>(m_spec);
 
-        // Just a mock, try farm out one task
 
-        constexpr unsigned kMaxTask = 262144;
+        create_map_tasks();
+        finish_tasks();
 
-        std::vector<MapTask> task_pool;
-        task_pool.reserve(m_shards.size());
+        std::cout << "All mapping tasks completed! Start reducing phase...\n" << std::flush;
+
+        create_reduce_tasks();
+        finish_tasks();
+
+
+        WorkerPoolManager::signal_termination();
+        m_worker_pool->wait();
+
+        g_master_run_spec = nullptr;
+        return true;
+    }
+
+private:
+
+    void create_map_tasks()
+    {
+        m_task_pool.clear();
+        m_task_pool.reserve(m_shards.size());
+
         for (const auto & shard : m_shards)
         {
-            task_pool.emplace_back( shard, std::string() );
+            m_task_pool.emplace_back( std::make_unique<MapTask>(shard) );
+        }
+    }
+
+    void create_reduce_tasks()
+    {
+
+        boost::filesystem::path output_dir = m_spec.get_output_dir();
+
+        boost::filesystem::directory_iterator begin(output_dir);
+        boost::filesystem::directory_iterator end;
+        auto file_range = boost::make_iterator_range(begin, end);
+
+        std::vector< std::vector<std::string> > hash_to_file_list;
+
+        for (auto dir_entry : file_range)
+        {
+            std::string filename = dir_entry.path().filename().string();
+
+            std::regex expr("^(\\d+)_(\\d+)\\.mapped$");
+            std::smatch what;
+            bool match_success = std::regex_search(filename, what, expr);
+
+            if (match_success)
+            {
+                const unsigned hash = boost::lexical_cast<unsigned>(what[1].str());
+                const unsigned worker_id = boost::lexical_cast<unsigned>(what[2].str());
+
+                if (hash_to_file_list.size() <= hash)
+                {
+                    hash_to_file_list.resize(hash + 1);
+                }
+
+                std::vector<std::string> & file_list = hash_to_file_list[hash];
+
+                if (file_list.size() <= worker_id)
+                {
+                    file_list.resize(worker_id + 1);
+                }
+
+                file_list[worker_id] = filename;
+            }
         }
 
+        m_task_pool.clear();
+        for (auto & file_list : hash_to_file_list)
+        {
+            m_task_pool.emplace_back(  std::make_unique<ReduceTask>( std::move(file_list) )  );
+        }
+    }
 
+    void finish_tasks()
+    {
         // a very non-compliant iterator..
         class WorkerIter
         {
@@ -695,22 +785,22 @@ public:
             unsigned m_num_workers = 1;
         };
 
-        WorkerIter worker_iter( worker_pool.get_num_workers() );
+        WorkerIter worker_iter( m_worker_pool->get_num_workers() );
         for (;;)
         {
             // Scan through all tasks
             unsigned num_keep_waiting = 0;
-            for ( auto & task : task_pool )
+            for ( const std::unique_ptr<Task> & task : m_task_pool )
             {
-                if (task.should_wait())
+                if (task->should_wait())
                 {
                     ++num_keep_waiting;
                 }
 
-                if (task.should_assign())
+                if (task->should_assign())
                 {
                     // Loop until can find an available worker to assign
-                    while ( !worker_pool.get_worker(*++worker_iter)->try_assign_task(&task) );
+                    while ( !m_worker_pool->get_worker(*++worker_iter)->try_assign_task(task.get()) );
                 }
             }
 
@@ -719,17 +809,8 @@ public:
                 break;
             }
         }
-
-        std::cout << "All tasks completed!\n" << std::flush;
-        WorkerPoolManager::signal_termination();
-
-        worker_pool.wait();
-
-        g_master_run_spec = nullptr;
-        return true;
     }
 
-private:
     void initialize_output_directory() const
     {
         const auto & output_dir = m_spec.get_output_dir();
@@ -772,6 +853,9 @@ private:
 
     const MapReduceSpec & m_spec;
     const std::vector<FileShard> & m_shards;
+
+    std::unique_ptr<WorkerPoolManager> m_worker_pool;
+    std::vector<std::unique_ptr<Task>> m_task_pool;
 
 
 };

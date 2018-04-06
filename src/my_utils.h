@@ -14,6 +14,37 @@ using TaskType = typename masterworker::TaskRequest::TaskType;
 constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
 constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
 
+using WorkerErrorEnum = masterworker::WorkerErrorEnum ;
+
+inline const char * worker_error_enum_to_string(WorkerErrorEnum e)
+{
+    switch(e)
+    {
+    case WorkerErrorEnum::kUnknownError:
+        return "kUnknownError";
+    case WorkerErrorEnum::kGood:
+        return "kGood";
+    case WorkerErrorEnum::kInputFileLengthError:
+        return "kInputFileLengthError";
+    case WorkerErrorEnum::kInputFileRangeError:
+        return "kInputFileRangeError";
+    case WorkerErrorEnum::kInputFileNewlineError:
+        return "kInputFileNewlineError";
+    case WorkerErrorEnum::kInputFileGetlineError:
+        return "kInputFileGetlineError";
+    case WorkerErrorEnum::kTaskTypeError:
+        return "kTaskTypeError";
+    case WorkerErrorEnum::kTaskProcessorNotFoundError:
+        return "kTaskProcessorNotFoundError";
+    case WorkerErrorEnum::kWorkerBusyError:
+        return "kWorkerBusyError";
+    case WorkerErrorEnum::kReceptionError:
+        return "kReceptionError";
+    default:
+        return "incomplete_switch_";
+    }
+}
+
 inline gpr_timespec & operator+=(gpr_timespec & a, const gpr_timespec & b)
 {
     BOOST_ASSERT(a.clock_type == b.clock_type);

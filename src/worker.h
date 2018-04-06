@@ -35,46 +35,73 @@ constexpr gpr_timespec kSendReplyTimeout = make_milliseconds(15'000, kClockType)
 constexpr gpr_timespec kServerCqTimeout = make_milliseconds(500, kClockType);
 constexpr unsigned kCallListGarbageCollectInterval = 16;
 
+
 template <class Func>
-inline std::pair<bool, unsigned>
+inline std::tuple<bool, WorkerErrorEnum, unsigned>
 for_each_line_in_file_subrange(
       std::ifstream & ifs
     , const unsigned offset
-    , const unsigned length
+    , unsigned length
     , Func do_line // must accept a mutable rvalue reference to a std::string
     )
 {
+    const char * fail_reason = nullptr;
+
     unsigned num_lines_read = 0;
     bool success = true;
+    WorkerErrorEnum err_e = WorkerErrorEnum::kGood;
 
+    // Get file length
+    ifs.seekg(0, ifs.end);
+    const unsigned file_length = boost::numeric_cast<unsigned>(  std::max((long)ifs.tellg(), 0l)  );
+
+    // Translate zero read length request to entire file length
     if (success)
     {
-        success = (length > 0);
+        if (offset == 0 && length == 0)
+        {
+            length = file_length; // requesting offset == length == 0 means read whole file.
+        }
     }
 
-    // Range check by trying to read from offset+length-1 (last char of shard)
-    std::ifstream::int_type c = 0;
+    // Fail directly if file has 0 length
+    if (success)
+    {
+        if (file_length <= 0)
+        {
+            success = false;
+            err_e = WorkerErrorEnum::kInputFileLengthError;
+        }
+    }
+
+    // Fail if shard is out of file's range
+    if (success)
+    {
+        success = (offset + length <= file_length);
+        if (!success)
+        {
+            err_e = WorkerErrorEnum::kInputFileRangeError;
+        }
+    }
+
+
+    // Check whether last character in the shard is newline or EOF.
     if (success)
     {
         ifs.clear();
         ifs.seekg( offset + length - 1 );
-        c = ifs.get();
-        success = (ifs.good());
-    }
+        auto c = ifs.get();
 
-    // We just successfully read the last character in fileshard
-    // Check whether it is a newline. Skip the check if end of shard is also EOF.
-    if (success)
-    {
-        // Test whether is EOF
         std::ifstream::int_type cc = ifs.get();
         if ( !ifs.eof() )
         {
             success = (ifs.good()) && (c == '\n');
         }
 
-        ifs.seekg( 0 );
-        ifs.clear();
+        if (!success)
+        {
+            err_e = WorkerErrorEnum::kInputFileNewlineError;
+        }
     }
 
     // Check offset-1 is newline character.
@@ -83,14 +110,21 @@ for_each_line_in_file_subrange(
     {
         if (offset > 0)
         {
+            ifs.clear();
             ifs.seekg( offset - 1 );
-            c = ifs.get();
+            auto c = ifs.get();
             success = (ifs.good()) && (c == '\n');
+        }
+
+        if (!success)
+        {
+            err_e = WorkerErrorEnum::kInputFileNewlineError;
         }
     }
 
     if (success)
     {
+        ifs.clear();
         ifs.seekg( offset );
 
         std::string my_line;
@@ -108,9 +142,17 @@ for_each_line_in_file_subrange(
         }
 
         success = (ifs.tellg() >= offset + length) || ifs.eof();
+
+        if (!success)
+        {
+            err_e = WorkerErrorEnum::kInputFileGetlineError;
+        }
     }
 
-    return std::make_pair(success, num_lines_read);
+    ifs.clear();
+    ifs.seekg(0);
+
+    return std::make_tuple(success, err_e, num_lines_read);
 }
 
 
@@ -127,7 +169,7 @@ public:
         request_call(service, cq);
     }
 
-    void send_reply(bool success)
+    void send_reply(bool success, WorkerErrorEnum err_e)
     {
         BOOST_ASSERT(!m_send_reply_time);
         m_send_reply_time = std::make_unique<gpr_timespec>(gpr_now(kClockType));
@@ -136,6 +178,10 @@ public:
         m_reply = masterworker::TaskAck();
         m_reply.set_task_uid( m_request.task_uid() );
         m_reply.set_success(success);
+        if (!success)
+        {
+            m_reply.set_error_enum( err_e );
+        }
 
         // Call Finish
         m_responder.Finish(m_reply, grpc::Status::OK, this);
@@ -234,7 +280,7 @@ public:
         if (!success)
         {
             std::cout << "Rejecting task " + std::to_string(call->get_task_uuid()) + "!\n" << std::flush;
-            call->send_reply(false);
+            call->send_reply( false, WorkerErrorEnum::kWorkerBusyError );
         }
     }
 
@@ -268,13 +314,13 @@ private:
             CallData * call = wait_for_call();
             std::cout << "Accepting task " + std::to_string(call->get_task_uuid()) + "!\n" << std::flush;
 
-            bool success = execute_task_internal(call);
+            auto status = execute_task_internal(call);
 
-            if (success)
-            {
-                std::cout << "Task " + std::to_string(call->get_task_uuid()) + " execution successful!\n" << std::flush;
-            }
-            call->send_reply(success);
+            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " execution " +
+                (status.first ? "succeeded" : "failed") + "! error_enum=" +
+                worker_error_enum_to_string(status.second) + "\n" << std::flush;
+
+            call->send_reply(status.first, status.second);
 
             unset_call(call);
         }
@@ -295,7 +341,7 @@ private:
     }
 
     // Invoke the mapper or reducer
-    bool execute_task_internal(CallData * call)
+    std::pair<bool, WorkerErrorEnum> execute_task_internal(CallData * call)
     {
         BOOST_ASSERT(call);
 
@@ -316,12 +362,11 @@ private:
         else
         {
             // Failed due to unknown task type!
-            std::cout << "Task " + std::to_string(call->get_task_uuid()) + " failed due to unknown task type!\n" << std::flush;
-            return false;
+            return std::make_pair(false, WorkerErrorEnum::kTaskTypeError);
         }
     }
 
-    bool execute_map_task(CallData * call)
+    std::pair<bool, WorkerErrorEnum> execute_map_task(CallData * call)
     {
         // Perform a series of steps. If one step fails, exit directly while printing a message.
         // If all steps succeeds, don't print anything.
@@ -337,8 +382,7 @@ private:
         auto mapper_ptr = get_mapper_from_task_factory(user_id);
         if (!mapper_ptr)
         {
-            std::cout << "Task " + std::to_string(task_uuid) + " failed due to unregistered mapper!\n" << std::flush;
-            return false;
+            return std::make_pair(false, WorkerErrorEnum::kTaskProcessorNotFoundError);
         }
 
         // Read each record in the input shard, and write to output file
@@ -352,8 +396,9 @@ private:
             std::ifstream ifs(filename);
 
             bool success = false;
+            WorkerErrorEnum err_e = WorkerErrorEnum::kUnknownError;
             unsigned num_lines_read = 0;
-            std::tie(success, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
+            std::tie(success, err_e, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
                 [&](const std::string & line)
                 {
                     mapper_ptr->map(line);
@@ -362,14 +407,14 @@ private:
 
             if (!success)
             {
-                return false;
+                return std::make_pair(false, err_e);
             }
         }
 
-        return true;
+        return std::make_pair(true, WorkerErrorEnum::kGood);
     }
 
-    bool execute_reduce_task(CallData * call)
+    std::pair<bool, WorkerErrorEnum> execute_reduce_task(CallData * call)
     {
         const auto & request = call->get_request();
         TaskType task_type = request.task_type();
@@ -381,8 +426,7 @@ private:
         auto reducer_ptr = get_reducer_from_task_factory(user_id);
         if (!reducer_ptr)
         {
-            std::cout << "Task " + std::to_string(task_uuid) + " failed due to unregistered reducer!\n" << std::flush;
-            return false;
+            return std::make_pair(false, WorkerErrorEnum::kTaskProcessorNotFoundError);
         }
 
         for (const auto & shard : request.input_file())
@@ -395,8 +439,9 @@ private:
             std::ifstream ifs(filename);
 
             bool success = false;
+            WorkerErrorEnum err_e = WorkerErrorEnum::kUnknownError;
             unsigned num_lines_read = 0;
-            std::tie(success, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
+            std::tie(success, err_e, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
                 [&](const std::string & line)
                 {
                     reducer_ptr->reduce(std::string(), std::vector<std::string>());
@@ -405,11 +450,11 @@ private:
 
             if (!success)
             {
-                return false;
+                return std::make_pair(false, err_e);
             }
         }
 
-        return true;
+        return std::make_pair(true, WorkerErrorEnum::kGood);
     }
 
 
@@ -532,7 +577,6 @@ private:
         // Create the first CallData object and call the constructor.
         // The constructor will open the worker up for incoming calls.
         call_list.emplace_back(m_service, *m_cq);
-
 
 
         // Loop waiting on the completion queue.
