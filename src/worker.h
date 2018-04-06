@@ -7,6 +7,8 @@
 #include <memory>
 #include <utility>
 #include <string>
+#include <vector>
+#include <map>
 
 #include <iostream>
 #include <sstream>
@@ -15,6 +17,8 @@
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/assert.hpp>
 #include <boost/filesystem.hpp>
+#include <boost/algorithm/string/split.hpp>
+#include <boost/algorithm/string/classification.hpp>
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
@@ -52,8 +56,9 @@ for_each_line_in_file_subrange(
     WorkerErrorEnum err_e = WorkerErrorEnum::kGood;
 
     // Get file length
+    ifs.clear();
     ifs.seekg(0, ifs.end);
-    const unsigned file_length = boost::numeric_cast<unsigned>(  std::max((long)ifs.tellg(), 0l)  );
+    const unsigned file_length = boost::numeric_cast<unsigned>(  std::max( (long)ifs.tellg(), 0l )  );
 
     // Translate zero read length request to entire file length
     if (success)
@@ -128,7 +133,7 @@ for_each_line_in_file_subrange(
         ifs.seekg( offset );
 
         std::string my_line;
-        while ( (ifs.tellg() < offset + length) && ifs )
+        while ( (ifs.tellg() < offset + length) && ifs && success )
         {
             my_line.clear();
 
@@ -136,11 +141,14 @@ for_each_line_in_file_subrange(
 
             if (!my_line.empty())
             {
-                do_line(std::move(my_line));
-                ++num_lines_read;
+                std::tie(success, err_e) = do_line(std::move(my_line));
+                if (success) ++num_lines_read;
             }
         }
+    }
 
+    if (success)
+    {
         success = (ifs.tellg() >= offset + length) || ifs.eof();
 
         if (!success)
@@ -177,11 +185,9 @@ public:
         // Assemble reply message
         m_reply = masterworker::TaskAck();
         m_reply.set_task_uid( m_request.task_uid() );
-        m_reply.set_success(success);
-        if (!success)
-        {
-            m_reply.set_error_enum( err_e );
-        }
+        m_reply.set_success( success );
+        m_reply.set_error_enum( err_e );
+
 
         // Call Finish
         m_responder.Finish(m_reply, grpc::Status::OK, this);
@@ -402,6 +408,7 @@ private:
                 [&](const std::string & line)
                 {
                     mapper_ptr->map(line);
+                    return std::make_pair(true, WorkerErrorEnum::kGood);
                 }
             );
 
@@ -429,6 +436,9 @@ private:
             return std::make_pair(false, WorkerErrorEnum::kTaskProcessorNotFoundError);
         }
 
+        // Start building an ordered map from keys to all values of every key.
+        std::map< std::string, std::vector<std::string> > kv_set;
+
         for (const auto & shard : request.input_file())
         {
             const std::string & filename = shard.filename();
@@ -442,16 +452,73 @@ private:
             WorkerErrorEnum err_e = WorkerErrorEnum::kUnknownError;
             unsigned num_lines_read = 0;
             std::tie(success, err_e, num_lines_read) = for_each_line_in_file_subrange(ifs, offset, length,
+                //// Start Lambda Expression ////
                 [&](const std::string & line)
                 {
-                    reducer_ptr->reduce(std::string(), std::vector<std::string>());
+                    std::vector<std::string> kv;
+                    boost::split(kv, line,
+                        [](char c){ return c == kDelimiter; }, boost::token_compress_on);
+
+                    if (kv.size() != 2)
+                    {
+                        return std::make_pair(false, WorkerErrorEnum::kReduceTokenizeError);
+                    }
+
+                    auto iter =
+                        kv_set.emplace(
+                            std::piecewise_construct,
+                            std::forward_as_tuple( std::move(kv[0]) ),
+                            std::forward_as_tuple()
+                        ).first;
+
+                    iter->second.push_back( std::move(kv[1]) );
+
+                    // Not a real return: we're in a lambda expression right now.
+                    return std::make_pair(true, WorkerErrorEnum::kGood);
                 }
+                //// End Lambda Expression ////
             );
 
+            // Failed building the map. Early exit here.
             if (!success)
             {
                 return std::make_pair(false, err_e);
             }
+        }
+
+        {
+            bool scanned_first = false;
+            size_t prev_hash = 0;
+            bool success = true;
+            for (const auto & p : kv_set)
+            {
+                if (!scanned_first)
+                {
+                    scanned_first = true;
+                    prev_hash = compute_hash_for_key(p.first);
+                }
+                else
+                {
+                    size_t curr_hash = compute_hash_for_key(p.first);
+                    success = (curr_hash == prev_hash);
+                    prev_hash = curr_hash;
+
+                    if (!success)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            if (!success)
+            {
+                return std::make_pair(false, WorkerErrorEnum::kReduceKeyHashConsistencyError);
+            }
+        }
+
+        for (const auto & p : kv_set)
+        {
+            reducer_ptr->reduce(p.first, p.second);
         }
 
         return std::make_pair(true, WorkerErrorEnum::kGood);

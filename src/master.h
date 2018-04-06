@@ -568,7 +568,7 @@ class WorkerPoolManager
                 std::cout <<
                     "Task " + std::to_string(task->get_id()) + " " + (success ? "suceeded" : "failed") + "! "
                     + "error_enum=" + worker_error_enum_to_string(error_enum) + " "
-                    + "failure_count=" + (success ? std::string("n/a") : std::to_string(failure_count)) + " "
+                    + "failure_count=" + (success ? std::string("dunno") : std::to_string(failure_count)) + " "
                     + "perm_fail=" + (perm_fail ? "true" : "false")
                     + "\n" << std::flush;
 
@@ -680,10 +680,12 @@ public:
         create_map_tasks();
         finish_tasks();
 
-        std::cout << "All mapping tasks completed! Start reducing phase...\n" << std::flush;
+        std::cout << "All mapping tasks completed! Starting reducing phase...\n" << std::flush;
 
         create_reduce_tasks();
         finish_tasks();
+
+        std::cout << "All reducing tasks completed! Shutting down worker pool...\n" << std::flush;
 
 
         WorkerPoolManager::signal_termination();
@@ -709,7 +711,7 @@ private:
     void create_reduce_tasks()
     {
 
-        boost::filesystem::path output_dir = m_spec.get_output_dir();
+        const boost::filesystem::path output_dir = m_spec.get_output_dir();
 
         boost::filesystem::directory_iterator begin(output_dir);
         boost::filesystem::directory_iterator end;
@@ -721,7 +723,7 @@ private:
         {
             std::string filename = dir_entry.path().filename().string();
 
-            std::regex expr("^(\\d+)_(\\d+)\\.mapped$");
+            std::regex expr("^map_k(\\d+)_w(\\d+)$");
             std::smatch what;
             bool match_success = std::regex_search(filename, what, expr);
 
@@ -742,7 +744,9 @@ private:
                     file_list.resize(worker_id + 1);
                 }
 
-                file_list[worker_id] = filename;
+                boost::filesystem::path filepath = output_dir;
+                filepath /= filename;
+                file_list[worker_id] = filepath.string();
             }
         }
 

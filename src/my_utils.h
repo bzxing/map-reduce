@@ -14,6 +14,8 @@ using TaskType = typename masterworker::TaskRequest::TaskType;
 constexpr TaskType kMapTaskType = masterworker::TaskRequest::kMap;
 constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
 
+constexpr char kDelimiter = ' ';
+
 using WorkerErrorEnum = masterworker::WorkerErrorEnum ;
 
 inline const char * worker_error_enum_to_string(WorkerErrorEnum e)
@@ -40,9 +42,72 @@ inline const char * worker_error_enum_to_string(WorkerErrorEnum e)
         return "kWorkerBusyError";
     case WorkerErrorEnum::kReceptionError:
         return "kReceptionError";
+    case WorkerErrorEnum::kReduceTokenizeError:
+        return "kReduceTokenizeError";
+    case WorkerErrorEnum::kReduceKeyHashConsistencyError:
+        return "kReduceKeyHashConsistencyError";
     default:
-        return "incomplete_switch_";
+        return "_incomplete_switch_statements_";
     }
+}
+
+class WorkerConfig
+{
+    struct PrivateCtorKey {};
+
+public:
+    static void install_config( masterworker::WorkerConfig && config )
+    {
+        BOOST_ASSERT_MSG(!s_inst, "Not designed to install worker configuration twice!");
+        s_inst = std::make_unique<WorkerConfig>(
+              PrivateCtorKey()
+            , std::move( *config.mutable_output_dir() )
+            , config.num_output_files()
+            , config.worker_uid()
+        );
+        std::cout << "Configuration success!\n" << std::flush;
+
+    }
+
+    static const WorkerConfig * get_inst()
+    {
+        return s_inst.get();
+    }
+
+    WorkerConfig(
+          const PrivateCtorKey &
+        , std::string && output_dir
+        , unsigned num_output_files
+        , unsigned worker_uid
+    ) :
+          m_output_dir( std::move(output_dir) )
+        , m_num_output_files( num_output_files )
+        , m_worker_uid( worker_uid )
+    {
+        BOOST_ASSERT(!m_output_dir.empty());
+        BOOST_ASSERT(m_num_output_files > 0);
+    }
+
+    // Outside code only have read only access
+    // so making this public isn't a concern
+    std::string m_output_dir;
+    unsigned m_num_output_files = 1;
+    unsigned m_worker_uid = 0;
+
+private:
+
+    static std::unique_ptr<WorkerConfig> s_inst;
+};
+
+inline size_t compute_hash_for_key(const std::string & key)
+{
+    const WorkerConfig * config = WorkerConfig::get_inst();
+    BOOST_ASSERT(config);
+
+    std::hash<std::string> hash_fn;
+
+    size_t hash = hash_fn(key) % (config->m_num_output_files);
+    return hash;
 }
 
 inline gpr_timespec & operator+=(gpr_timespec & a, const gpr_timespec & b)
