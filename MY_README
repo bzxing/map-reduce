@@ -1,0 +1,68 @@
+
+Environment:
+    Ubuntu 16.04
+    GCC 5.4.0 (with --std=c++14)
+    Boost Library version 1.58 (sudo apt-get install libboost-all-dev)
+    Intel TBB (thread building block) Library version 4.4 (sudo apt-get install sudo apt-get install libtbb-dev)
+
+    Linker flags in Makefile in ./src and ./test directory has been slightly modified to link to a few
+    libraries.
+
+Project Description:
+
+    Master will wipe out entire output directory before starting each session. Be careful
+    when you configure.
+
+    n_workers field in config file is ignored. It can be deduced from worker address list.
+
+    Intermediate output filename are [map|reduce]_k[key_hash]_w[worker_id]
+
+    Key_hash = std::hash<std::string>()(my_key) % num_output_files_per_worker
+
+    The keys in each reducer task's input file must hash to the same value!
+
+    Additionally the Master does a "summarize" phase
+    after the reduce phase, to aggregate all reducer output into one file "reduce_final" for convenience.
+
+    Tasks have four states:
+        Ready - should & can be dipatched: Can transition to Executing
+        Executing - dispatched, but not sure if will succeed. Can transition to either Ready, Completed, or Failed
+        Completed - Done and success. State is final.
+        Failed - Unrecoverable failure. State is final.
+    A phase completes of all tasks are either COmpleted or Failed. Otherwise,
+    master will keep assigning unfinished tasks to free workers. If any failure, worker will
+    pass back an error code (ErrorEnum). Master can decide if the error is permanent or worth retrying.
+    Worker assignment policy is round robin: See Master::finish_tasks
+
+    WorkerPoolManager and WorkerManager handles the connection and RPC calls from each worker.
+    You assign task to WorkerManager.
+
+    Workers has two threads: One for server accepting or rejecting tasks, another for Executor asynchronously
+    executing tasks and flagging the task states. Just one connection & CQ to/from the master.
+
+    Master manages one connection with a separate thread for each worker it talks to.
+
+    My implementation does garbage collection. (controlled by kIdleTimeout, currently 15 seconds)
+    Any incomplete RPC call stalling in the completion queue for more than kIdleTimeout
+    will be garbage-collected. Also worker will clean up and get ready for new handshake if master
+    let it idle for more than kIdleTimeout.
+
+    Workers are re-usable after one master completes, by another master. But it can't serve
+    multiple masters at the same time - single session only. Once master signals complete
+    to workers, workers will gracefully clean up resources (threads, sockets, etc.) and wait
+    for new handshake.
+
+    New files added:
+        my_utils.h  - Time utils, constexprs, types, anything shared by both worker and master, etc.
+        my_assert.h - Error reporting, stack trace generation, etc.
+        worker_singletons.cc - Shelter for global state
+        master_singletons.cc - Shelter for global state
+
+
+
+
+
+
+
+
+
