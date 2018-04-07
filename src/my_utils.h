@@ -16,6 +16,8 @@ constexpr TaskType kReduceTaskType = masterworker::TaskRequest::kReduce;
 
 constexpr char kDelimiter = ' ';
 
+
+
 using WorkerErrorEnum = masterworker::WorkerErrorEnum ;
 
 inline const char * worker_error_enum_to_string(WorkerErrorEnum e)
@@ -58,7 +60,7 @@ class WorkerConfig
 public:
     static void install_config( masterworker::WorkerConfig && config )
     {
-        BOOST_ASSERT_MSG(!s_inst, "Not designed to install worker configuration twice!");
+        s_inst.reset();
         s_inst = std::make_unique<WorkerConfig>(
               PrivateCtorKey()
             , std::move( *config.mutable_output_dir() )
@@ -214,3 +216,6 @@ inline bool operator>=(const gpr_timespec & a, const gpr_timespec & b)
 {
     return (a == b) || (a > b);
 }
+
+constexpr gpr_timespec kIdleTimeout = make_milliseconds(15'000, kClockType);
+

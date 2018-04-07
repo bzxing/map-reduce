@@ -33,8 +33,6 @@
 
 // I know it's a header file and unnamed namespace does nothing...But I'm too lazy :P
 
-
-constexpr gpr_timespec kTaskExecutionTimeout = make_milliseconds(15'000, kClockType);
 constexpr gpr_timespec kWorkerConfigTimeout = make_milliseconds(5'000, kClockType);
 
 constexpr unsigned kTaskMaxNumAttempts = 3; // Hehe
@@ -54,6 +52,11 @@ public:
         kCompleted,
         kFailedUnrecoverable
     };
+
+    bool perm_fail() const
+    {
+        return m_state == TaskState::kFailedUnrecoverable;
+    }
 
     bool should_wait() const
     {
@@ -278,6 +281,45 @@ class WorkerPoolManager
     using TaskAckResponder = grpc::ClientAsyncResponseReader<TaskAck>;
     using NextStatus = grpc::CompletionQueue::NextStatus;
 
+    class CloseCallData
+    {
+        using Ack = masterworker::Ack;
+        using AckResponder = grpc::ClientAsyncResponseReader<Ack>;
+    public:
+
+        // Constructor will issue a call
+        CloseCallData( masterworker::WorkerService::Stub & stub )
+        {
+            m_responder = stub.PrepareAsyncClose
+                (&m_context, m_request, &m_cq);
+            m_responder->StartCall();
+            m_responder->Finish(&m_reply, &m_status, this);
+            wait();
+        }
+
+        std::pair<bool, WorkerErrorEnum> wait()
+        {
+            gpr_timespec deadline = gpr_now(kClockType) + kIdleTimeout;
+
+            void * receive_tag = nullptr;
+            bool ok = false;
+            // Wait for a long period of time...If fails, exit anyways haha.
+            NextStatus next_status = m_cq.AsyncNext(&receive_tag, &ok, deadline);
+
+            return std::make_pair(true, WorkerErrorEnum::kGood);
+        }
+
+    private:
+
+        grpc::ClientContext m_context;
+        grpc::CompletionQueue m_cq;
+        std::unique_ptr<AckResponder> m_responder;
+
+        Ack m_request;
+        Ack m_reply;
+        grpc::Status m_status;
+    };
+
     //// Begin class CallData ////
     class CallData
     {
@@ -297,7 +339,7 @@ class WorkerPoolManager
 
         std::pair<bool, WorkerErrorEnum> try_get_result()
         {
-            gpr_timespec deadline = m_timestamp + kTaskExecutionTimeout;
+            gpr_timespec deadline = m_timestamp + kIdleTimeout;
 
             void * receive_tag = nullptr;
             bool ok = false;
@@ -418,6 +460,11 @@ class WorkerPoolManager
         void wait()
         {
             m_listen_for_completion_thread.join();
+        }
+
+        void close()
+        {
+            CloseCallData close_call(*m_stub);
         }
 
     private:
@@ -632,6 +679,14 @@ public:
         }
     }
 
+    void close()
+    {
+        for (const auto & worker_mgr_ptr : m_workers)
+        {
+            worker_mgr_ptr->close();
+        }
+    }
+
     static void signal_termination()
     {
         WorkerManager::signal_termination();
@@ -677,19 +732,25 @@ public:
         m_worker_pool = std::make_unique<WorkerPoolManager>(m_spec);
 
 
-        create_map_tasks();
-        finish_tasks();
+        unsigned num_map_tasks = create_map_tasks();
+        unsigned num_map_tasks_failed = finish_tasks();
 
-        std::cout << "All mapping tasks completed! Starting reducing phase...\n" << std::flush;
+        std::cout << "Mapping phase completed! Start reducing phase...\n" << std::flush;
 
-        create_reduce_tasks();
-        finish_tasks();
+        unsigned num_reduce_tasks = create_reduce_tasks();
+        unsigned num_reduce_tasks_failed = finish_tasks();
 
-        std::cout << "All reducing tasks completed! Shutting down worker pool...\n" << std::flush;
+        std::cout << "Reducing phase completed! Start summarizing phase...\n" << std::flush;
 
+        summarize_reducer_output();
+        std::cout << "Finished summarizing reducer output! Shutting down worker pool...\n" << std::flush;
+
+        std::cout << std::to_string(num_map_tasks_failed) + " out of " + std::to_string(num_map_tasks) + " map tasks failed\n" << std::flush;
+        std::cout << std::to_string(num_reduce_tasks_failed) + " out of " + std::to_string(num_reduce_tasks) + " reduce tasks failed\n" << std::flush;
 
         WorkerPoolManager::signal_termination();
         m_worker_pool->wait();
+        m_worker_pool->close();
 
         g_master_run_spec = nullptr;
         return true;
@@ -697,7 +758,49 @@ public:
 
 private:
 
-    void create_map_tasks()
+    void summarize_reducer_output() const
+    {
+        const boost::filesystem::path output_dir = m_spec.get_output_dir();
+
+        boost::filesystem::directory_iterator begin(output_dir);
+        boost::filesystem::directory_iterator end;
+        auto file_range = boost::make_iterator_range(begin, end);
+
+        std::multiset< std::string > sorted_lines;
+
+        for (const auto dir_entry : file_range)
+        {
+            const auto path = dir_entry.path();
+            const std::string filename = path.filename().string();
+
+            const std::regex expr("^reduce_k(\\d+)_w(\\d+)$");
+            std::smatch what;
+            const bool match_success = std::regex_search(filename, what, expr);
+
+            if (match_success)
+            {
+                std::ifstream ifs(path.string());
+
+                for (std::string line; std::getline(ifs, line);)
+                {
+                    sorted_lines.insert(std::move(line));
+                }
+            }
+        }
+
+        {
+            auto final_output_path = output_dir;
+            final_output_path /= "reduce_final";
+
+            std::ofstream ofs(final_output_path.string());
+            for (const auto & line : sorted_lines)
+            {
+                ofs << line << std::endl;
+            }
+        }
+    }
+
+    unsigned create_map_tasks()
     {
         m_task_pool.clear();
         m_task_pool.reserve(m_shards.size());
@@ -706,11 +809,11 @@ private:
         {
             m_task_pool.emplace_back( std::make_unique<MapTask>(shard) );
         }
+        return boost::numeric_cast<unsigned>(m_task_pool.size());
     }
 
-    void create_reduce_tasks()
+    unsigned create_reduce_tasks()
     {
-
         const boost::filesystem::path output_dir = m_spec.get_output_dir();
 
         boost::filesystem::directory_iterator begin(output_dir);
@@ -755,9 +858,11 @@ private:
         {
             m_task_pool.emplace_back(  std::make_unique<ReduceTask>( std::move(file_list) )  );
         }
+
+        return boost::numeric_cast<unsigned>(m_task_pool.size());
     }
 
-    void finish_tasks()
+    unsigned finish_tasks()
     {
         // a very non-compliant iterator..
         class WorkerIter
@@ -813,6 +918,15 @@ private:
                 break;
             }
         }
+
+        return boost::numeric_cast<unsigned>(
+            std::count_if(m_task_pool.cbegin(), m_task_pool.cend(),
+            [](const std::unique_ptr<Task> & task)
+            {
+                return task->perm_fail();
+            }))  ;
+
+
     }
 
     void initialize_output_directory() const
@@ -832,8 +946,15 @@ private:
             std::cout << "Warning: Will erase existing location: \"" + output_dir + "\" to make room for output directory.\nAre you really sure?\n" << std::flush;
             std::cout << "To proceed, type the target location to erase:\n" << std::flush;
             std::string key_input;
+
+            constexpr bool skip_check = true;
             for (;;)
             {
+                if (skip_check)
+                {
+                    break;
+                }
+
                 std::getline(std::cin, key_input);
                 if (key_input == output_dir)
                 {

@@ -66,4 +66,5 @@ service WorkerService
 {
 	rpc DispatchTaskToWorker (TaskRequest) returns (TaskAck) {}
     rpc SetConfig (WorkerConfig) returns (Ack) {}
+    rpc Close (Ack) returns (Ack) {}
 }

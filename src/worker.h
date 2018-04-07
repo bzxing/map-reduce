@@ -35,9 +35,11 @@ std::shared_ptr<BaseMapper> get_mapper_from_task_factory(const std::string& user
 std::shared_ptr<BaseReducer> get_reducer_from_task_factory(const std::string& user_id);
 
 
-constexpr gpr_timespec kSendReplyTimeout = make_milliseconds(15'000, kClockType);
+
 constexpr gpr_timespec kServerCqTimeout = make_milliseconds(500, kClockType);
 constexpr unsigned kCallListGarbageCollectInterval = 16;
+
+extern tbb::atomic<bool> s_terminate_worker;
 
 
 template <class Func>
@@ -163,11 +165,61 @@ for_each_line_in_file_subrange(
     return std::make_tuple(success, err_e, num_lines_read);
 }
 
-
-class CallData
+class CloseCallData // Does not mean "close call"...
 {
 public:
-    CallData(
+    CloseCallData(
+        masterworker::WorkerService::AsyncService & service
+      , grpc::ServerCompletionQueue & cq
+    ) :
+        m_responder(&m_context)
+    {
+        request_call(service, cq);
+    }
+
+    void send_reply()
+    {
+        // Call Finish
+        m_reply.set_success(true);
+        m_responder.Finish(m_reply, grpc::Status::OK, this);
+    }
+
+
+private:
+
+    void request_call(
+          masterworker::WorkerService::AsyncService & service
+        , grpc::ServerCompletionQueue & cq
+    )
+    {
+        service.RequestClose(
+              &m_context
+            , &m_request
+            , &m_responder
+            , &cq
+            , &cq
+            , this
+        );
+    }
+
+    //Executor & m_executor;
+    //masterworker::WorkerService::AsyncService & m_service;
+    //grpc::ServerCompletionQueue & m_cq;
+
+    // The m_responder depends on m_context,
+    // so make m_context must appear before m_responder
+    grpc::ServerContext m_context;
+    grpc::ServerAsyncResponseWriter<masterworker::Ack> m_responder;
+
+    masterworker::Ack m_request;
+    masterworker::Ack m_reply;
+};
+
+
+class DispatchTaskToWorkerCallData
+{
+public:
+    DispatchTaskToWorkerCallData(
         masterworker::WorkerService::AsyncService & service
       , grpc::ServerCompletionQueue & cq
     ) :
@@ -228,7 +280,7 @@ private:
         if (m_send_reply_time)
         {
             gpr_timespec time_diff = curr_time - *m_send_reply_time;
-            if (time_diff >= kSendReplyTimeout)
+            if (time_diff >= kIdleTimeout)
             {
                 return true;
             }
@@ -280,7 +332,7 @@ public:
     // be responsible for replying to the caller.
     //
     // If executor is busy, reject the call and send a reply directly.
-    void async_execute_and_reply(CallData * const call)
+    void async_execute_and_reply(DispatchTaskToWorkerCallData * const call)
     {
         bool success = try_set_call(call);
         if (!success)
@@ -290,6 +342,11 @@ public:
         }
     }
 
+    void wait()
+    {
+        m_executor_thread.join();
+    }
+
 private:
 
     // If the executor is free, occupy it by setting m_call pointer,
@@ -297,12 +354,12 @@ private:
     // thread will pick the call up
     //
     // Else return false.
-    bool try_set_call(CallData * const call)
+    bool try_set_call(DispatchTaskToWorkerCallData * const call)
     {
         BOOST_ASSERT(call != nullptr);
         ScopedLock lock(m_call_ptr_mutex);
 
-        CallData * snapshot = m_call;
+        DispatchTaskToWorkerCallData * snapshot = m_call;
         if (!snapshot)
         {
             m_call = call;
@@ -315,9 +372,14 @@ private:
 
     void executor_thread()
     {
-        for (;;)
+        while(!s_terminate_worker)
         {
-            CallData * call = wait_for_call();
+            DispatchTaskToWorkerCallData * call = wait_for_call();
+            if (!call)
+            {
+                continue;
+            }
+
             std::cout << "Accepting task " + std::to_string(call->get_task_uuid()) + "!\n" << std::flush;
 
             auto status = execute_task_internal(call);
@@ -334,20 +396,25 @@ private:
 
     // Wait until a call arrives, then return the
     // arrived call pointer value.
-    CallData * wait_for_call()
+    DispatchTaskToWorkerCallData * wait_for_call()
     {
         ScopedLock lock(m_call_ptr_mutex);
 
         while (!m_call)
         {
-            m_call_ptr_cv.wait(lock);
+            m_call_ptr_cv.wait_for(lock, std::chrono::milliseconds(100));
+
+            if (s_terminate_worker)
+            {
+                return nullptr;
+            }
         }
 
         return m_call;
     }
 
     // Invoke the mapper or reducer
-    std::pair<bool, WorkerErrorEnum> execute_task_internal(CallData * call)
+    std::pair<bool, WorkerErrorEnum> execute_task_internal(DispatchTaskToWorkerCallData * call)
     {
         BOOST_ASSERT(call);
 
@@ -372,7 +439,7 @@ private:
         }
     }
 
-    std::pair<bool, WorkerErrorEnum> execute_map_task(CallData * call)
+    std::pair<bool, WorkerErrorEnum> execute_map_task(DispatchTaskToWorkerCallData * call)
     {
         // Perform a series of steps. If one step fails, exit directly while printing a message.
         // If all steps succeeds, don't print anything.
@@ -421,7 +488,7 @@ private:
         return std::make_pair(true, WorkerErrorEnum::kGood);
     }
 
-    std::pair<bool, WorkerErrorEnum> execute_reduce_task(CallData * call)
+    std::pair<bool, WorkerErrorEnum> execute_reduce_task(DispatchTaskToWorkerCallData * call)
     {
         const auto & request = call->get_request();
         TaskType task_type = request.task_type();
@@ -526,17 +593,17 @@ private:
 
 
     // Simply unset the call and assert call pointer is the expected value.
-    void unset_call(CallData * const call)
+    void unset_call(DispatchTaskToWorkerCallData * const call)
     {
         ScopedLock lock(m_call_ptr_mutex);
 
-        CallData * snapshot = m_call;
+        DispatchTaskToWorkerCallData * snapshot = m_call;
         BOOST_ASSERT(snapshot == call);
 
         m_call = nullptr;
     }
 
-    CallData * m_call = nullptr; // Used to indicate whether is busy or not.
+    DispatchTaskToWorkerCallData * m_call = nullptr; // Used to indicate whether is busy or not.
     std::mutex m_call_ptr_mutex;
     std::condition_variable m_call_ptr_cv;
 
@@ -558,18 +625,39 @@ public:
         m_cq = builder.AddCompletionQueue();
         m_server = builder.BuildAndStart();
 
+        s_terminate_worker = false;
+        m_executor = std::make_unique<Executor>();
+
         std::cout << "Waiting for configuration on " + addr + "\n" << std::flush;
         wait_for_config();
         setup_work_directory();
 
         std::cout << "Start accepting tasks on " + addr + "\n" << std::flush;
-        m_listening_thread = std::thread([&]() { start_listening_loop(); });
+        start_listening_loop();
     }
 
-    void wait()
+    ~Server()
     {
-        m_listening_thread.join();
+        s_terminate_worker = true;
+        m_executor->wait();
+
+        m_cq->Shutdown();
+        m_server->Shutdown();
+
+        void * tag;
+        bool ok;
+        for (;;)
+        {
+            gpr_timespec deadline = gpr_now(kClockType) + kServerCqTimeout;
+            auto status = m_cq->AsyncNext(&tag, &ok, deadline);
+            if (status == CqNextStatus::SHUTDOWN)
+            {
+                break;
+            }
+        }
     }
+
+
 
 private:
 
@@ -636,15 +724,17 @@ private:
 
     void start_listening_loop()
     {
-        // Create a list to store all active CallData objects.
+        // Create a list to store all active DispatchTaskToWorkerCallData objects.
         // We can go through the list regularly to collect timed-out calls that
         // never return from completion queue
-        std::list<CallData> call_list;
 
-        // Create the first CallData object and call the constructor.
+
+        // Create the first DispatchTaskToWorkerCallData object and call the constructor.
         // The constructor will open the worker up for incoming calls.
-        call_list.emplace_back(m_service, *m_cq);
+        m_call_list.emplace_back(m_service, *m_cq);
+        gpr_timespec last_event = gpr_now(kClockType);
 
+        CloseCallData close_call(m_service, *m_cq);
 
         // Loop waiting on the completion queue.
         // The queue will return either an incoming request,
@@ -654,9 +744,9 @@ private:
         // to do the work then send a reply back with success.
         // If the executor is busy, we send a reply back with failure right away.
         //
-        // For finished outgoing request, we need to clean it up from the call_list.
+        // For finished outgoing request, we need to clean it up from the m_call_list.
         //
-        // At regular interval, also need to clean up CallData objects on the call_list
+        // At regular interval, also need to clean up DispatchTaskToWorkerCallData objects on the m_call_list
         // that are too old, but we already sent a reply back.
         // These will probably never be cleaned up cuz they're stale.
         for (unsigned i = 1; ; ++i)
@@ -669,13 +759,13 @@ private:
                 const gpr_timespec curr_time = gpr_now(kClockType);
 
                 unsigned destruction_count = 0;
-                for (auto iter = call_list.begin(); iter != call_list.end(); )
+                for (auto iter = m_call_list.begin(); iter != m_call_list.end(); )
                 {
                     if (iter->should_destroy(curr_time))
                     {
                         // std::cout << "Destroying request for Task "
                         //     + std::to_string(iter->get_task_uuid()) + "\n" << std::flush;
-                        iter = call_list.erase(iter);
+                        iter = m_call_list.erase(iter);
                         ++destruction_count;
                     }
                     else
@@ -686,7 +776,7 @@ private:
                 if (destruction_count > 0)
                 {
                     std::cout << "Destroyed " + std::to_string(destruction_count) + " requests. "
-                        + std::to_string(call_list.size()) + " left pending.\n" << std::flush;
+                        + std::to_string(m_call_list.size()) + " left pending.\n" << std::flush;
                 }
             }
 
@@ -699,22 +789,64 @@ private:
 
             if ( status == CqNextStatus::GOT_EVENT && ok )
             {
-                CallData * call_data = static_cast<CallData *>(tag);
-
-                if (call_data->has_sent_reply())
+                // Tag matches the close call. Close connection.
+                if (tag == &close_call)
                 {
-                    std::cout << "Reply returned for task " + std::to_string(call_data->get_task_uuid()) + "\n" << std::flush;
-                    // Case when a reply has been completed.
-                    // We'll just mark it as completed so it'll be garbage-collected
-                    call_data->set_reply_returned();
+                    // Master requests to close the session!
+                    close_call.send_reply();
+
+                    // Wait until it returns or sufficient amount of time has passed
+                    for (;;)
+                    {
+                        gpr_timespec deadline = gpr_now(kClockType) + kIdleTimeout;
+
+                        status = m_cq->AsyncNext(&tag, &ok, deadline);
+
+                        // If the tag matches, exit directly
+                        if ( status == CqNextStatus::GOT_EVENT && ok && (tag == &close_call) )
+                        {
+                            break;
+                        }
+
+                        // Waited for too long...Break any ways.
+                        if ( status == CqNextStatus::TIMEOUT )
+                        {
+                            break;
+                        }
+                    }
+
+
+                    break;
                 }
                 else
                 {
-                    // Case when receiving an incoming call.
-                    m_executor.async_execute_and_reply(call_data);
+                    last_event = gpr_now(kClockType);
 
-                    // Then invite a new call in
-                    call_list.emplace_back(m_service, *m_cq);
+                    DispatchTaskToWorkerCallData * call_data = static_cast<DispatchTaskToWorkerCallData *>(tag);
+
+                    if (call_data->has_sent_reply())
+                    {
+                        std::cout << "Reply returned for task " + std::to_string(call_data->get_task_uuid()) + "\n" << std::flush;
+                        // Case when a reply has been completed.
+                        // We'll just mark it as completed so it'll be garbage-collected
+                        call_data->set_reply_returned();
+                    }
+                    else
+                    {
+                        // Case when receiving an incoming call.
+                        m_executor->async_execute_and_reply(call_data);
+
+                        // Then invite a new call in
+                        m_call_list.emplace_back(m_service, *m_cq);
+                    }
+                }
+            }
+            else
+            {
+                // Idled for too long. Close it out.
+                if (gpr_now(kClockType) - last_event > kIdleTimeout)
+                {
+                    break;
                 }
             }
         }
@@ -725,9 +857,9 @@ private:
     std::unique_ptr<grpc::Server> m_server;
     std::unique_ptr<grpc::ServerCompletionQueue> m_cq;
 
-    Executor m_executor;
+    std::unique_ptr<Executor> m_executor;
+    std::list<DispatchTaskToWorkerCallData> m_call_list;
 
-    std::thread m_listening_thread;
 };
 
 /* CS6210_TASK: Handle all the task a Worker is supposed to do.
@@ -753,14 +885,13 @@ public:
     so you can manipulate them however you want when running map/reduce tasks*/
     bool run()
     {
-        // auto mapper = get_mapper_from_task_factory("cs6210");
-        // mapper->map("I m just a 'dummy', a \"dummy line\"");
-        // auto reducer = get_reducer_from_task_factory("cs6210");
-        // reducer->reduce("dummy", std::vector<std::string>({"1", "1"}));
 
-        Server server(m_address);
+        for (;;)
+        {
+            Server server(m_address);
+            std::cout << "Restarting server for a new session...\n" << std::flush;
+        }
 
-        server.wait();
         return true;
     }
 

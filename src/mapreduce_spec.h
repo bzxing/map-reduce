@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <set>
 
 #include <algorithm>
 #include <functional>
@@ -222,6 +223,15 @@ private:
 
     ParseLineResult parse_line(const std::string & field, const std::string & arg)
     {
+        {
+            // Skip if in ignore set
+            auto iter = m_ignore_set.find(field);
+            if (iter != m_ignore_set.end())
+            {
+                return ParseLineResult();
+            }
+        }
+
         auto iter = m_field_lookup.find(field);
         if (iter == m_field_lookup.end())
         {
@@ -238,12 +248,6 @@ private:
         return func(*this, arg);
     }
 
-
-    ParseLineResult parse_n_workers(const std::string & arg)
-    {
-        std::cout << "Config Parse Warning: Field n_workers is ignored\n" << std::flush;
-        return ParseLineResult();
-    }
     ParseLineResult parse_n_output_files(const std::string & arg)
     {
         return generic_parse_unsigned(arg, m_output_files);
@@ -267,12 +271,6 @@ private:
     ParseLineResult parse_user_id(const std::string & arg)
     {
         return generic_parse_string(arg, m_user_id);
-    }
-
-    bool validate_n_workers() const
-    {
-        // This field is ignored. No validation needed.
-        return true;
     }
 
     bool validate_n_output_files() const
@@ -381,14 +379,16 @@ private:
     std::vector<std::string> m_input_files;
 
     std::map<std::string, FieldParseData> m_field_lookup {
-         { "n_workers",           {0, &MapReduceSpec::parse_n_workers,           &MapReduceSpec::validate_n_workers } }
-        ,{ "worker_ipaddr_ports", {0, &MapReduceSpec::parse_worker_ipaddr_ports, &MapReduceSpec::validate_worker_addresses } }
+         //{ "n_workers",           {0, &MapReduceSpec::parse_n_workers,           &MapReduceSpec::validate_n_workers } }
+         { "worker_ipaddr_ports", {0, &MapReduceSpec::parse_worker_ipaddr_ports, &MapReduceSpec::validate_worker_addresses } }
         ,{ "input_files",         {0, &MapReduceSpec::parse_input_files,         &MapReduceSpec::validate_input_files } }
         ,{ "output_dir",          {0, &MapReduceSpec::parse_output_dir,          &MapReduceSpec::validate_output_directories } }
         ,{ "n_output_files",      {0, &MapReduceSpec::parse_n_output_files,      &MapReduceSpec::validate_n_output_files } }
         ,{ "map_kilobytes",       {0, &MapReduceSpec::parse_map_kilobytes,       &MapReduceSpec::validate_map_kilobytes } }
         ,{ "user_id",             {0, &MapReduceSpec::parse_user_id,             &MapReduceSpec::validate_user_id } }
     };
+
+    std::set<std::string> m_ignore_set { "n_workers" };
 };
 
 /* CS6210_TASK: Populate MapReduceSpec data structure with the specification from the config file */
