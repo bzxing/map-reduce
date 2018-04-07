@@ -514,8 +514,21 @@ class WorkerPoolManager
             BOOST_ASSERT(m_stub);
 
             // Set config
-            bool config_success = set_worker_config(spec);
-            BOOST_ASSERT_MSG(config_success, ("Could not configure worker " + m_address).c_str());
+            std::cout << "Trying to configure worker " + m_address + "\n" << std::flush;
+            for (;;)
+            {
+                bool success = set_worker_config(spec);
+                if (success)
+                {
+                    break;
+                }
+                else
+                {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            }
+            std::cout << "Finished configuring worker " + m_address + "\n" << std::flush;
+
 
             // Kick off thread that listens for completion
             start_listening_for_completion();
