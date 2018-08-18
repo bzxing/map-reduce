@@ -1,5 +1,4 @@
-# cs6210Project4
-MapReduce Infrastructure
+# MapReduce Infrastructure
 
 [Project Description](description.md)
 
